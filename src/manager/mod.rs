@@ -11,14 +11,13 @@ pub mod dotnet;
 pub mod node;
 
 /// Every package manager mpm can drive, in the order they are reported.
-pub const ALL: &[&str] = &["pacman", "apt", "brew", "cargo", "npm", "pnpm", "dotnet"];
+pub const ALL: &[&str] = &["apt", "brew", "cargo", "dotnet", "npm", "pacman", "pnpm"];
 
 /// One package manager, described as argument vectors rather than shell strings.
 ///
 /// `install` and `uninstall` return a *list* of invocations because some
-/// managers cannot express per-package versions in a single command line
-/// (`cargo install --version` applies to one crate) and some accept only one
-/// package at a time (`dotnet tool uninstall`).
+/// managers accept only one package at a time (`dotnet tool install`) and some
+/// need a different command shape per package (a pinned `pacman -U <url>`).
 pub trait Manager {
     fn id(&self) -> &'static str;
 
@@ -70,23 +69,21 @@ pub trait Manager {
 
 pub fn get(id: &str) -> Option<Box<dyn Manager>> {
     match id {
-        "pacman" => Some(Box::new(arch::Arch)),
         "apt" => Some(Box::new(apt::Apt)),
         "brew" => Some(Box::new(brew::Brew)),
         "cargo" => Some(Box::new(cargo::Cargo)),
-        "npm" => Some(Box::new(node::Node { tool: node::NodeTool::Npm })),
-        "pnpm" => Some(Box::new(node::Node { tool: node::NodeTool::Pnpm })),
         "dotnet" => Some(Box::new(dotnet::Dotnet)),
+        "npm" => Some(Box::new(node::Node { tool: node::NodeTool::Npm })),
+        "pacman" => Some(Box::new(arch::Arch)),
+        "pnpm" => Some(Box::new(node::Node { tool: node::NodeTool::Pnpm })),
         _ => None,
     }
 }
 
-/// Whether this manager is present on the current machine.
 pub fn present(manager: &dyn Manager) -> bool {
     which::which(manager.binary()).is_ok()
 }
 
-/// Split packages into pinned and unpinned groups.
 pub(crate) fn partition_pinned(packages: &[PackageSpec]) -> (Vec<&PackageSpec>, Vec<&PackageSpec>) {
     packages.iter().partition(|spec| spec.version.is_some())
 }
@@ -116,6 +113,13 @@ mod tests {
             let manager = get(id).unwrap_or_else(|| panic!("`{id}` is advertised but not registered"));
             assert_eq!(&manager.id(), id);
         }
+    }
+
+    #[test]
+    fn the_advertised_list_is_alphabetical() {
+        let mut sorted = ALL.to_vec();
+        sorted.sort();
+        assert_eq!(ALL, sorted.as_slice());
     }
 
     #[test]

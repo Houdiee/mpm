@@ -44,9 +44,8 @@ impl Manager for Brew {
         }
     }
 
-    /// Homebrew has no general mechanism for installing an arbitrary old
-    /// version, so a pin here would be a promise mpm cannot keep. Pick the
-    /// versioned formula instead.
+    /// Homebrew cannot install an arbitrary old version; use a versioned
+    /// formula such as `node@20` instead.
     fn supports_pinning(&self) -> bool {
         false
     }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::manager::{Manager, partition_pinned};
+use crate::manager::Manager;
 use crate::exec::Invocation;
 use crate::manifest::grammar::PackageSpec;
 
@@ -12,23 +12,12 @@ impl Manager for Cargo {
     }
 
     fn install(&self, packages: &[PackageSpec]) -> Result<Vec<Invocation>> {
-        // `--version` binds to the whole invocation, so every pinned crate
-        // needs its own command. Unpinned crates still go out in one batch.
-        let (pinned, loose) = partition_pinned(packages);
-        let mut commands = Vec::new();
-
-        if !loose.is_empty() {
-            commands.push(
-                Invocation::new("cargo").arg("install").args(loose.iter().map(|s| s.name.clone())),
-            );
+        if packages.is_empty() {
+            return Ok(Vec::new());
         }
-        for spec in pinned {
-            let version = spec.version.as_deref().unwrap_or_default();
-            commands.push(
-                Invocation::new("cargo").arg("install").arg(spec.name.as_str()).arg("--version").arg(version),
-            );
-        }
-        Ok(commands)
+        // `cargo install` is variadic and takes a version per crate, so the
+        // whole set installs as one resolution rather than one per pin.
+        Ok(vec![Invocation::new("cargo").arg("install").args(packages.iter().map(crate_arg))])
     }
 
     fn uninstall(&self, names: &[String]) -> Vec<Invocation> {
@@ -68,6 +57,14 @@ impl Manager for Cargo {
     }
 }
 
+/// `cargo install` spells a version `crate@version`.
+fn crate_arg(spec: &PackageSpec) -> String {
+    match &spec.version {
+        Some(version) => format!("{}@{}", spec.name, version),
+        None => spec.name.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,24 +86,16 @@ ripgrep v14.1.0:
     }
 
     #[test]
-    fn pinned_crates_get_one_command_each() {
-        // `cargo install a b --version 1.0` would apply the version to both.
-        let cmds = Cargo.install(&[
-            PackageSpec::new("bat"),
-            PackageSpec::pinned("ripgrep", "14.1.0"),
-            PackageSpec::pinned("fd-find", "10.1.0"),
-        ]).expect("builds");
-        assert_eq!(cmds.len(), 3);
-        assert_eq!(cmds[0].args, vec!["install", "bat"]);
-        assert_eq!(cmds[1].args, vec!["install", "ripgrep", "--version", "14.1.0"]);
-        assert_eq!(cmds[2].args, vec!["install", "fd-find", "--version", "10.1.0"]);
-    }
-
-    #[test]
-    fn unpinned_crates_share_one_command() {
-        let cmds = Cargo.install(&[PackageSpec::new("bat"), PackageSpec::new("fd-find")]).expect("builds");
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].args, vec!["install", "bat", "fd-find"]);
+    fn every_crate_installs_in_one_command_carrying_its_own_version() {
+        let cmds = Cargo
+            .install(&[
+                PackageSpec::new("bat"),
+                PackageSpec::pinned("ripgrep", "14.1.0"),
+                PackageSpec::pinned("fd-find", "10.1.0"),
+            ])
+            .expect("builds");
+        assert_eq!(cmds.len(), 1, "one resolution, not one per pin");
+        assert_eq!(cmds[0].args, vec!["install", "bat", "ripgrep@14.1.0", "fd-find@10.1.0"]);
     }
 
     #[test]

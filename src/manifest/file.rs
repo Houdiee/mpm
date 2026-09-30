@@ -22,7 +22,6 @@ impl Line {
     }
 }
 
-/// A single manifest layer on disk.
 #[derive(Debug)]
 pub struct ManifestFile {
     path: PathBuf,
@@ -30,10 +29,8 @@ pub struct ManifestFile {
 }
 
 impl ManifestFile {
-    /// Load a manifest. A missing file is an empty manifest, not an error.
-    ///
-    /// A malformed entry *is* an error, reported with its line number: a line
-    /// mpm cannot read is intent it cannot honour.
+    /// A missing file is an empty manifest; a malformed entry is an error
+    /// reported with its line number.
     pub fn load(path: &Path) -> Result<Self> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
@@ -71,11 +68,9 @@ impl ManifestFile {
         self.specs().any(|spec| spec.name == name)
     }
 
-    /// Declare a package, or update its version if it is already declared.
-    ///
     /// Returns whether anything changed. New packages are appended rather than
-    /// sorted into place, so any grouping the user has built up is preserved,
-    /// and rewriting an existing line keeps its trailing comment.
+    /// sorted in, so the user's grouping survives, and rewriting an existing
+    /// line keeps its trailing comment.
     pub fn declare(&mut self, wanted: &PackageSpec) -> bool {
         for line in &mut self.lines {
             let Line::Declared { spec, raw } = line else { continue };
@@ -93,18 +88,15 @@ impl ManifestFile {
         true
     }
 
-    /// Withdraw a package from this layer. Returns whether anything changed.
+    /// Returns whether anything changed.
     pub fn undeclare(&mut self, name: &str) -> bool {
         let before = self.lines.len();
         self.lines.retain(|line| !matches!(line, Line::Declared { spec, .. } if spec.name == name));
         self.lines.len() != before
     }
 
-    /// Write the manifest out atomically.
-    ///
-    /// The content is written to a sibling temporary file, flushed to disk and
-    /// then renamed over the target, so an interrupted write can never leave a
-    /// truncated package list behind.
+    /// Written to a sibling temporary file, flushed, then renamed over the
+    /// target, so an interrupted write cannot truncate a package list.
     pub fn save(&self) -> Result<()> {
         let parent = self
             .path

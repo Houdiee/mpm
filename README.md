@@ -106,7 +106,7 @@ assumes that is dangerous:
   compute and execute the same `Reconciliation` value, so the preview is the
   action.
 - **Declaring a package is what keeps it.** Removal only ever targets packages
-  no manifest mentions, and `mpm adopt` records everything installed -- kernel
+  no manifest mentions, and `mpm inherit` records everything installed -- kernel
   included. mpm keeps no list of packages it secretly refuses to touch.
 - **Removal never touches configuration.** `apt remove`, not `apt purge`;
   `pacman -Rs`, not `-Rns`. Deleting a package's config is not a decision a
@@ -155,7 +155,7 @@ and `apply` puts it back.
 ## Getting started
 
 ```console
-$ mpm adopt           # put what is installed under management
+$ mpm inherit         # put what is installed under management
 $ mpm status          # should be clean
 $ cd ~/.config/mpm && git init && git add -A && git commit -m "my machine"
 ```
@@ -170,25 +170,39 @@ $ mpm apply                         # install it, remove what is undeclared
 Host-specific packages belong in the host layer, not the shared list:
 
 ```console
-$ mpm add -m pacman --host tlp
+$ mpm add --host pacman tlp
 ```
 
 ## Commands
 
 | Command | Action |
 |-|-|
-| `mpm` / `mpm status` | show drift; exits non-zero when the machine doesn't match |
-| `mpm apply` | converge (plan, confirm, execute) |
+| `mpm status [manager…]` | show drift; exits non-zero when the machine doesn't match |
+| `mpm apply [manager…]` | converge (plan, confirm, execute) |
 | `mpm apply --dry-run` | show the plan and stop |
-| `mpm adopt` | put installed packages under management, merging |
-| `mpm add -m <mgr> <pkg>…` | declare packages, for `apply` to install |
-| `mpm add --pin -m <mgr> <pkg>…` | declare them at the version installed right now |
-| `mpm pin -m <mgr> <pkg>…` | lock packages you already have |
-| `mpm unpin -m <mgr> <pkg>…` | let them track whatever is current |
-| `mpm remove -m <mgr> <pkg>…` | undeclare and uninstall now |
+| `mpm inherit [manager…]` | put installed packages under management, merging |
+| `mpm add <manager> <pkg>…` | declare packages, for `apply` to install |
+| `mpm add --pin <manager> <pkg>…` | declare them at the version installed right now |
+| `mpm pin <manager> <pkg>…` | lock packages you already have |
+| `mpm unpin <manager> <pkg>…` | let them track whatever is current |
+| `mpm remove <manager> <pkg>…` | undeclare and uninstall now |
 | `mpm managers` | supported managers, host, manifest path |
 
-Versions are always deliberate. `mpm adopt` records **names only**, so ordinary
+Managers are positional. `status`, `apply` and `inherit` take any number and act
+on every managed manager when given none; the editing commands take the manager
+first, then packages:
+
+```console
+$ mpm status                  # every managed manager
+$ mpm status cargo npm        # just these two
+$ mpm inherit pacman brew
+$ mpm add cargo ripgrep bat   # manager first, then packages
+$ mpm add cargo,npm fd        # one package, two manifests
+```
+
+Bare `mpm` prints help rather than doing anything.
+
+Versions are always deliberate. `mpm inherit` records **names only**, so ordinary
 upgrades stay none of mpm's business — a manifest entry without a version means
 "any version", and `pacman -Syu` upgrading it is not drift.
 
@@ -196,18 +210,17 @@ Pinning is reachable two ways, because it is both something you decide when
 declaring a package and something you do to one you already have:
 
 ```console
-$ mpm add --pin -m pacman ripgrep   # declare and lock in one step
-$ mpm pin -m pacman ripgrep         # lock what is already declared
-$ mpm unpin -m pacman ripgrep       # back to tracking current
+$ mpm add --pin pacman ripgrep   # declare and lock in one step
+$ mpm pin pacman ripgrep         # lock what is already declared
+$ mpm unpin pacman ripgrep       # back to tracking current
 ```
 
 Both read the installed version off the machine, so you never type a version by
 hand — which matters on Arch, where the pkgrel (`14.1.0-1`) is part of it. You
-can still write the pair yourself if you want: `mpm add -m cargo 'ripgrep 14.1.0'`.
+can still write the pair yourself if you want: `mpm add cargo 'ripgrep 14.1.0'`.
 
 `add`, `pin`, `unpin` and `remove` take `--host` to target this machine's layer
-instead of the shared one. `status`, `apply` and `adopt` take `-m/--manager` to
-narrow to one.
+instead of the shared one.
 
 To edit a manifest by hand, open it — `mpm managers` prints the path.
 
@@ -238,7 +251,7 @@ one would block with nothing on screen to explain why.
 
 ## Supported managers
 
-`pacman`, `apt`, `brew`, `cargo`, `npm`, `pnpm`, `dotnet`.
+`apt`, `brew`, `cargo`, `dotnet`, `npm`, `pacman`, `pnpm`.
 
 A manager is used when its executable is on `$PATH` *and* it has at least one
 manifest layer. `mpm managers` shows both.

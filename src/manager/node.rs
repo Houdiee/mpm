@@ -66,7 +66,6 @@ impl Manager for Node {
     }
 }
 
-/// npm and pnpm both take `name@version` as a command-line argument.
 fn registry_arg(spec: &PackageSpec) -> String {
     match &spec.version {
         Some(version) => format!("{}@{}", spec.name, version),
@@ -74,10 +73,8 @@ fn registry_arg(spec: &PackageSpec) -> String {
     }
 }
 
-/// Split npm's `name@version`, treating a leading `@` as a scope.
-///
-/// This is registry syntax, not manifest syntax: here the last `@` really is
-/// the separator. The split lives in this backend precisely so that
+/// Registry syntax, not manifest syntax: here the last `@` really is the
+/// separator, and a leading one is a scope. It lives here so that
 /// `PackageSpec::parse` can keep manifest names opaque.
 fn split_registry_spec(text: &str) -> PackageSpec {
     match text.rfind('@') {

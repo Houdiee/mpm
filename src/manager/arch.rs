@@ -7,12 +7,9 @@ use crate::manifest::grammar::PackageSpec;
 
 pub struct Arch;
 
-/// The tool used to install packages on this machine.
-///
-/// All of pacman, paru and yay read the same local database, so there is only
-/// ever one Arch package set. An AUR helper is an installation detail, not a
-/// separate manager -- treating them separately would make each one see the
-/// other's packages as drift.
+/// pacman, paru and yay read the same local database, so there is only ever one
+/// Arch package set. An AUR helper is an installation detail, not a separate
+/// manager: as separate managers each would see the other's packages as drift.
 enum Installer {
     /// `paru` or `yay`. They wrap pacman, handle repo and AUR packages alike,
     /// and call `sudo` themselves -- so they must not be run through it.
@@ -96,10 +93,8 @@ impl Manager for Arch {
         parse_two_column(stdout)
     }
 
-    /// The archive only holds the official repositories, so a name `pacman -Si`
+    /// The archive holds only the official repositories, so a name `pacman -Si`
     /// does not know is an AUR package -- and AUR builds are archived nowhere.
-    ///
-    /// Checked in one call for every pinned package at once.
     fn check_pins(&self, specs: &[&PackageSpec]) -> Result<()> {
         if specs.is_empty() {
             return Ok(());
@@ -126,11 +121,8 @@ impl Manager for Arch {
         Ok(())
     }
 
-    /// The Arch Linux Archive keeps every historical build permanently, so a
-    /// version declared today is still installable years from now.
-    ///
-    /// The version must include the pkgrel exactly as `pacman -Qe` reports it
-    /// (`14.1.0-1`), which is what `mpm adopt` writes.
+    /// The Arch Linux Archive keeps every historical build permanently. The
+    /// version must include the pkgrel as `pacman -Qe` reports it (`14.1.0-1`).
     fn supports_pinning(&self) -> bool {
         true
     }
@@ -158,7 +150,6 @@ fn repo_architecture(name: &str) -> Result<String> {
         .with_context(|| format!("could not read the architecture of `{name}` from `pacman -Si`"))
 }
 
-/// Package names that `pacman -Si` recognised, from a multi-package query.
 fn known_names(stdout: &str) -> BTreeSet<&str> {
     stdout
         .lines()

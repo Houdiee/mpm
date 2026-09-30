@@ -11,6 +11,8 @@ impl Manager for Dotnet {
         "dotnet"
     }
 
+    // One tool per call: the synopsis is `dotnet tool install <PACKAGE_NAME> -g`,
+    // singular. .NET 10 added `name@version` but still takes one tool at a time.
     fn install(&self, packages: &[PackageSpec]) -> Result<Vec<Invocation>> {
         Ok(packages
             .iter()

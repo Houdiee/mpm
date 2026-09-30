@@ -96,8 +96,6 @@ impl Invocation {
         (transcript, result)
     }
 
-    /// Run non-interactively and return stdout.
-    ///
     /// Output is decoded lossily: a package manager emitting stray non-UTF-8
     /// bytes should not abort the whole run.
     pub fn capture(&self) -> Result<String> {
@@ -126,10 +124,6 @@ impl Invocation {
     }
 }
 
-/// The privilege elevator to use, or `None` to run directly.
-///
-/// `MPM_SUDO` selects an alternative (`doas`, `run0`); setting it empty opts
-/// out of escalation entirely.
 /// The most specific line a failing command wrote to stderr.
 ///
 /// Tools put warnings first and the real complaint last, so without this the
@@ -142,6 +136,8 @@ fn last_line(stderr: &[u8]) -> String {
     }
 }
 
+/// `MPM_SUDO` selects an alternative (`doas`, `run0`); setting it empty opts out
+/// of escalation entirely.
 fn elevator() -> Option<String> {
     let name = match std::env::var("MPM_SUDO") {
         Ok(value) => value.trim().to_string(),

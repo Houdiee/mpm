@@ -38,7 +38,6 @@ pub struct Layout {
 /// The declared state for one manager, after every layer is applied.
 #[derive(Debug, Clone, Default)]
 pub struct Resolved {
-    /// Declared packages by name.
     pub declared: BTreeMap<String, PackageSpec>,
 }
 
@@ -103,7 +102,6 @@ impl Layout {
         vec![self.common(manager), self.host(host, manager)]
     }
 
-    /// Whether this manager is managed here at all.
     pub fn is_managed(&self, manager: &str, host: &str) -> bool {
         self.layer_paths(manager, host).iter().any(|path| path.exists())
     }

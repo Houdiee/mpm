@@ -17,8 +17,6 @@ impl PackageSpec {
         Self { name: name.into(), version: Some(version.into()) }
     }
 
-    /// Parse `<name>` or `<name> <version>`.
-    ///
     /// Whitespace is the only separator, because it is the one character no
     /// package manager allows inside a package name. Names are therefore
     /// opaque: `node@20` is a Homebrew formula, not a pinned `node`.
@@ -30,9 +28,9 @@ impl PackageSpec {
         if name.starts_with("//") {
             bail!("`{}`: comments start with `#`", text.trim());
         }
-        // Such a name would reach the package manager as an option. Building
-        // commands as argv stops a name changing the shape of a command; it
-        // does not stop one being read as a flag.
+        // Such a name reaches the package manager as an option. Building commands
+        // as argv stops a name changing a command's shape, not its being read
+        // as a flag.
         if name.starts_with('-') {
             bail!("`{}`: a package name cannot start with `-`", text.trim());
         }
@@ -56,8 +54,6 @@ impl fmt::Display for PackageSpec {
     }
 }
 
-/// Split a line into its declaration and its trailing comment.
-///
 /// The comment keeps its `#` and the declaration keeps the whitespace that
 /// separated them, so a line can be rewritten without disturbing its layout.
 pub fn split_comment(line: &str) -> (&str, Option<&str>) {
@@ -67,7 +63,7 @@ pub fn split_comment(line: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Parse one manifest line. `Ok(None)` for blank and comment-only lines.
+/// `Ok(None)` for blank and comment-only lines.
 pub fn parse_line(line: &str) -> Result<Option<PackageSpec>> {
     let (declaration, _) = split_comment(line);
     if declaration.trim().is_empty() {
