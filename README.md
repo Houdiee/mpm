@@ -170,34 +170,44 @@ $ mpm apply                         # install it, remove what is undeclared
 Host-specific packages belong in the host layer, not the shared list:
 
 ```console
-$ mpm add --host pacman tlp
+$ mpm pacman add --host tlp
 ```
 
 ## Commands
 
+```text
+mpm [MANAGERS] <command> [PACKAGE]...
+```
+
+Managers come first and are comma-separated; packages are space-separated.
+
 | Command | Action |
 |-|-|
-| `mpm status [manager…]` | show drift; exits non-zero when the machine doesn't match |
-| `mpm apply [manager…]` | converge (plan, confirm, execute) |
-| `mpm apply --dry-run` | show the plan and stop |
-| `mpm inherit [manager…]` | put installed packages under management, merging |
-| `mpm add <manager> <pkg>…` | declare packages, for `apply` to install |
-| `mpm add --pin <manager> <pkg>…` | declare them at the version installed right now |
-| `mpm pin <manager> <pkg>…` | lock packages you already have |
-| `mpm unpin <manager> <pkg>…` | let them track whatever is current |
-| `mpm remove <manager> <pkg>…` | undeclare and uninstall now |
+| `mpm [managers] status` | show drift; exits non-zero when the machine doesn't match |
+| `mpm [managers] apply` | converge (plan, confirm, execute) |
+| `mpm [managers] apply --dry-run` | show the plan and stop |
+| `mpm [managers] inherit` | put installed packages under management, merging |
+| `mpm <managers> add <pkg>…` | declare packages, for `apply` to install |
+| `mpm <managers> add --pin <pkg>…` | declare them at the version installed right now |
+| `mpm <managers> pin <pkg>…` | lock packages you already have |
+| `mpm <managers> unpin <pkg>…` | let them track whatever is current |
+| `mpm <managers> remove <pkg>…` | undeclare and uninstall now |
 | `mpm managers` | supported managers, host, manifest path |
 
-Managers are positional. `status`, `apply` and `inherit` take any number and act
-on every managed manager when given none; the editing commands take the manager
-first, then packages:
+```console
+$ mpm status                        # every managed manager
+$ mpm cargo,npm status              # just these two
+$ mpm pacman,brew inherit
+$ mpm cargo add ripgrep bat fd      # one manager, three packages
+$ mpm cargo,npm add typescript      # one package, two manifests
+```
+
+`status`, `apply` and `inherit` act on every managed manager when none is named.
+The editing commands require at least one, since they write to a manifest:
 
 ```console
-$ mpm status                  # every managed manager
-$ mpm status cargo npm        # just these two
-$ mpm inherit pacman brew
-$ mpm add cargo ripgrep bat   # manager first, then packages
-$ mpm add cargo,npm fd        # one package, two manifests
+$ mpm add ripgrep
+error: name a package manager first, as in `mpm cargo add ...`
 ```
 
 Bare `mpm` prints help rather than doing anything.
@@ -210,14 +220,14 @@ Pinning is reachable two ways, because it is both something you decide when
 declaring a package and something you do to one you already have:
 
 ```console
-$ mpm add --pin pacman ripgrep   # declare and lock in one step
-$ mpm pin pacman ripgrep         # lock what is already declared
-$ mpm unpin pacman ripgrep       # back to tracking current
+$ mpm pacman add --pin ripgrep   # declare and lock in one step
+$ mpm pacman pin ripgrep         # lock what is already declared
+$ mpm pacman unpin ripgrep       # back to tracking current
 ```
 
 Both read the installed version off the machine, so you never type a version by
 hand — which matters on Arch, where the pkgrel (`14.1.0-1`) is part of it. You
-can still write the pair yourself if you want: `mpm add cargo 'ripgrep 14.1.0'`.
+can still write the pair yourself if you want: `mpm cargo add 'ripgrep 14.1.0'`.
 
 `add`, `pin`, `unpin` and `remove` take `--host` to target this machine's layer
 instead of the shared one.

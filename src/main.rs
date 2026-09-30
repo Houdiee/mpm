@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::process::ExitCode;
 
@@ -19,20 +19,36 @@ mod report;
     about = "Declare the packages your machine should have, and converge to it"
 )]
 struct Cli {
+    /// Package managers to act on, comma-separated. Defaults to every managed one
+    #[arg(value_name = "MANAGERS")]
+    managers: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+impl Cli {
+    fn managers(&self) -> Vec<String> {
+        self.managers
+            .iter()
+            .flat_map(|spec| spec.split(','))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// Show how this machine differs from its manifests
-    Status(Scope),
+    Status,
 
     /// Install and remove packages so this machine matches its manifests
     Apply(ApplyArgs),
 
     /// Put installed packages under management, merging with what the manifest says
-    Inherit(InheritArgs),
+    Inherit(LayerArgs),
 
     /// Declare packages, to be installed by `mpm apply`
     Add(AddArgs),
@@ -51,17 +67,7 @@ enum Command {
 }
 
 #[derive(Args)]
-struct Scope {
-    /// Package managers to act on. Defaults to every managed one
-    #[arg(value_name = "MANAGER")]
-    managers: Vec<String>,
-}
-
-#[derive(Args)]
 struct ApplyArgs {
-    #[command(flatten)]
-    scope: Scope,
-
     /// Show the plan and exit without changing anything
     #[arg(long)]
     dry_run: bool,
@@ -69,15 +75,6 @@ struct ApplyArgs {
     /// Do not ask for confirmation
     #[arg(short = 'y', long)]
     yes: bool,
-}
-
-#[derive(Args)]
-struct InheritArgs {
-    #[command(flatten)]
-    scope: Scope,
-
-    #[command(flatten)]
-    layer: LayerArgs,
 }
 
 #[derive(Args)]
@@ -92,22 +89,12 @@ struct AddArgs {
 
 #[derive(Args)]
 struct PackageArgs {
-    /// Package manager to act on. Several may be given, comma-separated
-    #[arg(value_name = "MANAGER")]
-    manager: String,
-
     /// Packages. Quote one to carry a version: `'ripgrep 14.1.0'`
     #[arg(required = true, value_name = "PACKAGE")]
     packages: Vec<String>,
 
     #[command(flatten)]
     layer: LayerArgs,
-}
-
-impl PackageArgs {
-    fn managers(&self) -> Vec<String> {
-        split_managers(&self.manager)
-    }
 }
 
 /// Which layer an edit targets. Defaults to the shared manifest.
@@ -124,11 +111,20 @@ impl LayerArgs {
     }
 }
 
-fn split_managers(spec: &str) -> Vec<String> {
-    spec.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect()
+/// Rust ignores `SIGPIPE`, so `mpm status | head` panics on the first write
+/// after the reader exits. Restoring the default lets the process die quietly,
+/// the way a command-line tool is expected to.
+#[cfg(unix)]
+fn restore_sigpipe() {
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 }
 
+#[cfg(not(unix))]
+fn restore_sigpipe() {}
+
 fn main() -> ExitCode {
+    restore_sigpipe();
+
     match run() {
         Ok(code) => code,
         Err(error) => {
@@ -140,6 +136,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
+    let managers = cli.managers();
 
     // Bare `mpm` is someone asking what this does, not asking to run anything.
     let Some(command) = cli.command else {
@@ -150,58 +147,72 @@ fn run() -> Result<ExitCode> {
     let ctx = Ctx::discover()?;
 
     match command {
-        Command::Status(scope) => {
+        Command::Status => {
             // Non-zero on drift, so mpm is usable in CI and shell prompts.
-            let drifted = commands::status::status(&ctx, &scope.managers)?;
+            let drifted = commands::status::status(&ctx, &managers)?;
             return Ok(if drifted { ExitCode::FAILURE } else { ExitCode::SUCCESS });
         }
 
         Command::Apply(args) => commands::apply::apply(
             &ctx,
-            &args.scope.managers,
+            &managers,
             &ApplyOpts { dry_run: args.dry_run, yes: args.yes },
         )?,
 
-        Command::Inherit(args) => {
-            let layer = args.layer.resolve(&ctx.host);
-            commands::inherit::inherit(&ctx, &args.scope.managers, &layer)?;
+        Command::Inherit(layer) => {
+            commands::inherit::inherit(&ctx, &managers, &layer.resolve(&ctx.host))?;
         }
 
         Command::Add(args) => {
             let layer = args.packages.layer.resolve(&ctx.host);
-            commands::edit::add(
-                &ctx,
-                &args.packages.managers(),
-                &args.packages.packages,
-                &layer,
-                args.pin,
-            )?;
+            let managers = require_managers(&managers, "add")?;
+            commands::edit::add(&ctx, managers, &args.packages.packages, &layer, args.pin)?;
         }
 
         Command::Pin(args) => {
             let layer = args.layer.resolve(&ctx.host);
-            commands::edit::pin(&ctx, &args.managers(), &args.packages, &layer)?;
+            let managers = require_managers(&managers, "pin")?;
+            commands::edit::pin(&ctx, managers, &args.packages, &layer)?;
         }
 
         Command::Unpin(args) => {
             let layer = args.layer.resolve(&ctx.host);
-            commands::edit::unpin(&ctx, &args.managers(), &args.packages, &layer)?;
+            let managers = require_managers(&managers, "unpin")?;
+            commands::edit::unpin(&ctx, managers, &args.packages, &layer)?;
         }
 
         Command::Remove(args) => {
             let layer = args.layer.resolve(&ctx.host);
-            commands::edit::remove(&ctx, &args.managers(), &args.packages, &layer)?;
+            let managers = require_managers(&managers, "remove")?;
+            commands::edit::remove(&ctx, managers, &args.packages, &layer)?;
         }
 
-        Command::Managers => commands::managers(&ctx)?,
+        Command::Managers => {
+            if !managers.is_empty() {
+                bail!("`managers` lists what this machine has; it takes no manager of its own");
+            }
+            commands::managers(&ctx)?;
+        }
     }
 
     Ok(ExitCode::SUCCESS)
 }
 
+/// Editing commands write to a named manifest, so they cannot default to "all".
+fn require_managers<'a>(managers: &'a [String], command: &str) -> Result<&'a [String]> {
+    if managers.is_empty() {
+        bail!("name a package manager first, as in `mpm cargo {command} ...`");
+    }
+    Ok(managers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(argv: &[&str]) -> Cli {
+        Cli::try_parse_from(argv).expect("parses")
+    }
 
     #[test]
     fn the_cli_definition_is_valid() {
@@ -209,72 +220,83 @@ mod tests {
     }
 
     #[test]
-    fn the_host_flag_chooses_the_layer() {
-        assert_eq!(LayerArgs { host: false }.resolve("thinkpad"), Layer::Common);
-        assert_eq!(
-            LayerArgs { host: true }.resolve("thinkpad"),
-            Layer::Host("thinkpad".into())
-        );
+    fn no_manager_name_collides_with_a_command_name() {
+        // A leading token is read as a manager list unless it names a command,
+        // so the two vocabularies must stay disjoint.
+        let commands: Vec<String> =
+            Cli::command().get_subcommands().map(|sub| sub.get_name().to_string()).collect();
+        for id in manager::ALL {
+            assert!(!commands.iter().any(|name| name == id), "`{id}` is both a manager and a command");
+        }
+    }
+
+    #[test]
+    fn managers_lead_and_are_comma_separated() {
+        let cli = parse(&["mpm", "cargo,npm", "add", "ripgrep"]);
+        assert_eq!(cli.managers(), vec!["cargo", "npm"]);
+        let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
+        assert_eq!(args.packages.packages, vec!["ripgrep"]);
+    }
+
+    #[test]
+    fn packages_are_space_separated() {
+        let cli = parse(&["mpm", "cargo", "add", "ripgrep", "bat", "fd"]);
+        let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
+        assert_eq!(args.packages.packages, vec!["ripgrep", "bat", "fd"]);
+    }
+
+    #[test]
+    fn managers_lead_commands_that_take_no_packages_too() {
+        let cli = parse(&["mpm", "pacman,brew", "inherit"]);
+        assert_eq!(cli.managers(), vec!["pacman", "brew"]);
+        assert!(matches!(cli.command, Some(Command::Inherit(_))));
+    }
+
+    #[test]
+    fn a_command_name_is_not_read_as_a_manager() {
+        let cli = parse(&["mpm", "status"]);
+        assert!(cli.managers().is_empty());
+        assert!(matches!(cli.command, Some(Command::Status)));
     }
 
     #[test]
     fn bare_invocation_asks_for_help_rather_than_acting() {
-        let cli = Cli::try_parse_from(["mpm"]).expect("bare mpm parses");
+        let cli = parse(&["mpm"]);
+        assert!(cli.managers().is_empty());
         assert!(cli.command.is_none());
     }
 
     #[test]
+    fn an_edit_without_a_manager_is_refused() {
+        assert!(require_managers(&[], "add").is_err());
+        assert!(require_managers(&["cargo".to_string()], "add").is_ok());
+    }
+
+    #[test]
+    fn an_edit_still_needs_a_package() {
+        assert!(Cli::try_parse_from(["mpm", "cargo", "add"]).is_err());
+    }
+
+    #[test]
     fn a_version_is_only_ever_recorded_deliberately() {
-        let plain = Cli::try_parse_from(["mpm", "add", "cargo", "ripgrep"]).expect("parses");
+        let plain = parse(&["mpm", "cargo", "add", "ripgrep"]);
         let Some(Command::Add(args)) = plain.command else { panic!("expected add") };
         assert!(!args.pin);
 
-        let asked =
-            Cli::try_parse_from(["mpm", "add", "--pin", "cargo", "ripgrep"]).expect("parses");
+        let asked = parse(&["mpm", "cargo", "add", "--pin", "ripgrep"]);
         let Some(Command::Add(args)) = asked.command else { panic!("expected add") };
         assert!(args.pin);
     }
 
     #[test]
-    fn managers_are_positional_and_may_be_several() {
-        let cli = Cli::try_parse_from(["mpm", "status", "cargo", "npm"]).expect("parses");
-        let Some(Command::Status(scope)) = cli.command else { panic!("expected status") };
-        assert_eq!(scope.managers, vec!["cargo", "npm"]);
-    }
-
-    #[test]
-    fn no_manager_means_every_managed_one() {
-        let cli = Cli::try_parse_from(["mpm", "status"]).expect("parses");
-        let Some(Command::Status(scope)) = cli.command else { panic!("expected status") };
-        assert!(scope.managers.is_empty());
-    }
-
-    #[test]
-    fn an_edit_takes_the_manager_first_then_packages() {
-        let cli = Cli::try_parse_from(["mpm", "add", "cargo", "ripgrep", "bat"]).expect("parses");
-        let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
-        assert_eq!(args.packages.managers(), vec!["cargo"]);
-        assert_eq!(args.packages.packages, vec!["ripgrep", "bat"]);
-    }
-
-    #[test]
-    fn an_edit_may_name_several_managers_comma_separated() {
-        let cli = Cli::try_parse_from(["mpm", "add", "cargo,npm", "ripgrep"]).expect("parses");
-        let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
-        assert_eq!(args.packages.managers(), vec!["cargo", "npm"]);
-        assert_eq!(args.packages.packages, vec!["ripgrep"]);
-    }
-
-    #[test]
-    fn an_edit_needs_both_a_manager_and_a_package() {
-        assert!(Cli::try_parse_from(["mpm", "add"]).is_err());
-        assert!(Cli::try_parse_from(["mpm", "add", "cargo"]).is_err());
+    fn the_host_flag_chooses_the_layer() {
+        assert_eq!(LayerArgs { host: false }.resolve("thinkpad"), Layer::Common);
+        assert_eq!(LayerArgs { host: true }.resolve("thinkpad"), Layer::Host("thinkpad".into()));
     }
 
     #[test]
     fn a_pin_is_one_quoted_argument() {
-        let cli =
-            Cli::try_parse_from(["mpm", "add", "cargo", "ripgrep 14.1.0"]).expect("parses");
+        let cli = parse(&["mpm", "cargo", "add", "ripgrep 14.1.0"]);
         let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
         assert_eq!(args.packages.packages, vec!["ripgrep 14.1.0"]);
     }
