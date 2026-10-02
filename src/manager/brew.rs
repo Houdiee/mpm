@@ -1,7 +1,5 @@
-use anyhow::Result;
-
-use crate::manager::{Manager, parse_two_column};
 use crate::exec::Invocation;
+use crate::manager::{Manager, batched, parse_two_column};
 use crate::manifest::grammar::PackageSpec;
 
 pub struct Brew;
@@ -11,21 +9,25 @@ impl Manager for Brew {
         "brew"
     }
 
-    fn install(&self, packages: &[PackageSpec]) -> Result<Vec<Invocation>> {
-        if packages.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(vec![Invocation::new("brew").arg("install").args(packages.iter().map(|s| s.name.clone()))])
+    fn install_commands(&self, packages: &[PackageSpec]) -> Vec<Invocation> {
+        batched(
+            Invocation::new("brew").arg("install"),
+            packages.iter().map(|s| s.name.clone()),
+        )
     }
 
-    fn uninstall(&self, names: &[String]) -> Vec<Invocation> {
-        if names.is_empty() {
-            return Vec::new();
-        }
-        vec![Invocation::new("brew").arg("uninstall").args(names.iter().cloned())]
+    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+        batched(
+            Invocation::new("brew").arg("uninstall"),
+            names.iter().cloned(),
+        )
     }
 
-    fn list(&self) -> Invocation {
+    fn search_command(&self, query: &str) -> Option<Invocation> {
+        Some(Invocation::new("brew").args(["search"]).arg(query))
+    }
+
+    fn list_command(&self) -> Invocation {
         Invocation::new("brew").args(["list", "--formula", "--versions"])
     }
 
@@ -87,7 +89,10 @@ mod tests {
     #[test]
     fn versioned_formulae_are_recognised() {
         for name in ["node@20", "python@3.12", "postgresql@16"] {
-            assert!(Brew.name_selects_version(name), "`{name}` should select a version");
+            assert!(
+                Brew.name_selects_version(name),
+                "`{name}` should select a version"
+            );
         }
         for name in ["ripgrep", "vim"] {
             assert!(!Brew.name_selects_version(name));

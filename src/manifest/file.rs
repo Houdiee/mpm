@@ -45,12 +45,18 @@ impl ManifestFile {
             let parsed = grammar::parse_line(line)
                 .with_context(|| format!("{}:{}", path.display(), index + 1))?;
             lines.push(match parsed {
-                Some(spec) => Line::Declared { spec, raw: line.to_string() },
+                Some(spec) => Line::Declared {
+                    spec,
+                    raw: line.to_string(),
+                },
                 None => Line::Other(line.to_string()),
             });
         }
 
-        Ok(Self { path: path.to_path_buf(), lines })
+        Ok(Self {
+            path: path.to_path_buf(),
+            lines,
+        })
     }
 
     pub fn exists(&self) -> bool {
@@ -73,7 +79,9 @@ impl ManifestFile {
     /// line keeps its trailing comment.
     pub fn declare(&mut self, wanted: &PackageSpec) -> bool {
         for line in &mut self.lines {
-            let Line::Declared { spec, raw } = line else { continue };
+            let Line::Declared { spec, raw } = line else {
+                continue;
+            };
             if spec.name != wanted.name {
                 continue;
             }
@@ -84,14 +92,18 @@ impl ManifestFile {
             *raw = rewrite(raw, wanted);
             return true;
         }
-        self.lines.push(Line::Declared { spec: wanted.clone(), raw: wanted.to_string() });
+        self.lines.push(Line::Declared {
+            spec: wanted.clone(),
+            raw: wanted.to_string(),
+        });
         true
     }
 
     /// Returns whether anything changed.
     pub fn undeclare(&mut self, name: &str) -> bool {
         let before = self.lines.len();
-        self.lines.retain(|line| !matches!(line, Line::Declared { spec, .. } if spec.name == name));
+        self.lines
+            .retain(|line| !matches!(line, Line::Declared { spec, .. } if spec.name == name));
         self.lines.len() != before
     }
 
@@ -117,7 +129,9 @@ impl ManifestFile {
                 writeln!(handle, "{}", line.raw())
                     .with_context(|| format!("could not write {}", temp.display()))?;
             }
-            handle.sync_all().with_context(|| format!("could not flush {}", temp.display()))?;
+            handle
+                .sync_all()
+                .with_context(|| format!("could not flush {}", temp.display()))?;
         }
 
         fs::rename(&temp, &self.path)
@@ -130,8 +144,7 @@ impl ManifestFile {
 fn rewrite(raw: &str, spec: &PackageSpec) -> String {
     let (declaration, comment) = grammar::split_comment(raw);
     match comment {
-        // Reusing the whitespace that trailed the declaration keeps the
-        // comment in its original column.
+        // Reusing the original trailing whitespace keeps the comment in its column.
         Some(comment) => {
             let gap = &declaration[declaration.trim_end().len()..];
             format!("{spec}{gap}{comment}")
@@ -206,7 +219,10 @@ ripgrep 14.1.0  # locked
         assert!(manifest.declare(&PackageSpec::new("fd")));
         manifest.save().expect("save");
 
-        assert_eq!(fs::read_to_string(&path).expect("read back"), format!("{SAMPLE}fd\n"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read back"),
+            format!("{SAMPLE}fd\n")
+        );
     }
 
     #[test]
@@ -220,12 +236,19 @@ ripgrep 14.1.0  # locked
         manifest.save().expect("save");
 
         let written = fs::read_to_string(&path).expect("read back");
-        assert!(written.contains("ripgrep 14.2.0  # locked"), "got: {written}");
+        assert!(
+            written.contains("ripgrep 14.2.0  # locked"),
+            "got: {written}"
+        );
         assert!(!written.contains("14.1.0"));
 
         manifest.declare(&PackageSpec::new("ripgrep"));
         manifest.save().expect("save");
-        assert!(fs::read_to_string(&path).expect("read back").contains("ripgrep  # locked"));
+        assert!(
+            fs::read_to_string(&path)
+                .expect("read back")
+                .contains("ripgrep  # locked")
+        );
     }
 
     #[test]

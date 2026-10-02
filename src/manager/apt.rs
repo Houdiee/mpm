@@ -1,7 +1,5 @@
-use anyhow::Result;
-
-use crate::manager::Manager;
 use crate::exec::Invocation;
+use crate::manager::{Manager, batched, pinned_with};
 use crate::manifest::grammar::PackageSpec;
 
 pub struct Apt;
@@ -11,34 +9,60 @@ impl Manager for Apt {
         "apt"
     }
 
-    fn install(&self, packages: &[PackageSpec]) -> Result<Vec<Invocation>> {
-        if packages.is_empty() {
-            return Ok(Vec::new());
-        }
-        // apt-get rather than apt: apt's own manual warns that its CLI is not
-        // stable for scripting.
-        //
-        // -y is passed for installs because mpm has already shown the plan and
-        // taken confirmation. It is deliberately *not* passed for removals
-        // below, where apt's own prompt is a useful second gate.
-        Ok(vec![
+    fn install_commands(&self, packages: &[PackageSpec]) -> Vec<Invocation> {
+        // apt-get, not apt: apt's own manual warns its CLI is unstable for
+        // scripting. -y here because mpm already took confirmation; deliberately
+        // not on removals below, where apt's prompt is a useful second gate.
+        batched(
             Invocation::new("apt-get")
-                .as_root()
-                .args(["install", "-y"])
-                .args(packages.iter().map(spec_arg)),
-        ])
+                .with_root()
+                .args(["install", "-y"]),
+            packages.iter().map(|spec| pinned_with(spec, "=")),
+        )
     }
 
-    fn uninstall(&self, names: &[String]) -> Vec<Invocation> {
-        if names.is_empty() {
-            return Vec::new();
-        }
+    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
         // `remove`, never `purge`: purge also deletes the package's configuration
         // files, which is not something a package-list sync should decide.
-        vec![Invocation::new("apt-get").as_root().arg("remove").args(names.iter().cloned())]
+        batched(
+            Invocation::new("apt-get").with_root().arg("remove"),
+            names.iter().cloned(),
+        )
     }
 
-    fn list(&self) -> Invocation {
+    fn upgrade_commands(&self, unpinned: &[String], _pinned: &[String]) -> Vec<Invocation> {
+        batched(
+            Invocation::new("apt-get")
+                .with_root()
+                .args(["install", "--only-upgrade", "-y"]),
+            unpinned.iter().cloned(),
+        )
+    }
+
+    fn outdated_command(&self) -> Option<Invocation> {
+        Some(Invocation::new("apt").args(["list", "--upgradable"]))
+    }
+
+    /// `name/suite available arch [upgradable from: installed]`, after a
+    /// `Listing...` header.
+    fn parse_outdated(&self, stdout: &str) -> Vec<PackageSpec> {
+        stdout
+            .lines()
+            .filter(|line| line.contains('/') && line.contains('['))
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let name = fields.next()?.split('/').next()?;
+                let available = fields.next()?;
+                Some(PackageSpec::pinned(name, available))
+            })
+            .collect()
+    }
+
+    fn search_command(&self, query: &str) -> Option<Invocation> {
+        Some(Invocation::new("apt-cache").args(["search"]).arg(query))
+    }
+
+    fn list_command(&self) -> Invocation {
         // Manual packages only; the rest are dependencies.
         Invocation::new("apt-mark").arg("showmanual")
     }
@@ -62,30 +86,36 @@ impl Manager for Apt {
     }
 }
 
-/// apt spells a version constraint `name=version`.
-fn spec_arg(spec: &PackageSpec) -> String {
-    match &spec.version {
-        Some(version) => format!("{}={}", spec.name, version),
-        None => spec.name.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Captured from `apt list --upgradable` in debian:stable-slim.
+    const OUTDATED: &str = "\
+Listing...
+libpcre2-8-0/stable-security 10.46-1~deb13u3 amd64 [upgradable from: 10.46-1~deb13u2]
+libssl3t64/stable-security 3.5.7-1~deb13u3 amd64 [upgradable from: 3.5.7-1~deb13u2]
+";
 
     #[test]
     fn showmanual_output_is_parsed() {
         let out = "git\nripgrep\nvim\n";
         assert_eq!(
             Apt.parse_list(out),
-            vec![PackageSpec::new("git"), PackageSpec::new("ripgrep"), PackageSpec::new("vim")]
+            vec![
+                PackageSpec::new("git"),
+                PackageSpec::new("ripgrep"),
+                PackageSpec::new("vim")
+            ]
         );
     }
 
     #[test]
     fn pins_use_equals_syntax() {
-        let cmds = Apt.install(&[PackageSpec::pinned("ripgrep", "14.1.0"), PackageSpec::new("vim")]).expect("builds");
+        let cmds = Apt.install_commands(&[
+            PackageSpec::pinned("ripgrep", "14.1.0"),
+            PackageSpec::new("vim"),
+        ]);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].args, vec!["install", "-y", "ripgrep=14.1.0", "vim"]);
     }
@@ -93,19 +123,30 @@ mod tests {
     #[test]
     fn removal_never_purges() {
         let names = vec!["vim".to_string()];
-        assert_eq!(Apt.uninstall(&names)[0].args[0], "remove");
+        assert_eq!(Apt.uninstall_commands(&names)[0].args[0], "remove");
     }
 
     #[test]
     fn removal_is_not_auto_confirmed() {
         let names = vec!["vim".to_string()];
-        let cmd = &Apt.uninstall(&names)[0];
+        let cmd = &Apt.uninstall_commands(&names)[0];
         assert!(!cmd.args.iter().any(|a| a == "-y"));
     }
 
     #[test]
     fn install_and_remove_need_root() {
-        assert!(Apt.install(&[PackageSpec::new("vim")]).expect("builds")[0].needs_root);
-        assert!(Apt.uninstall(&["vim".to_string()])[0].needs_root);
+        assert!(Apt.install_commands(&[PackageSpec::new("vim")])[0].needs_root);
+        assert!(Apt.uninstall_commands(&["vim".to_string()])[0].needs_root);
+    }
+
+    #[test]
+    fn the_suite_is_stripped_and_the_header_skipped() {
+        assert_eq!(
+            Apt.parse_outdated(OUTDATED),
+            vec![
+                PackageSpec::pinned("libpcre2-8-0", "10.46-1~deb13u3"),
+                PackageSpec::pinned("libssl3t64", "3.5.7-1~deb13u3"),
+            ]
+        );
     }
 }

@@ -1,93 +1,162 @@
-use anyhow::Result;
-
 use crate::exec::Invocation;
 use crate::manifest::grammar::PackageSpec;
-
+pub mod apk;
 pub mod apt;
 pub mod arch;
 pub mod brew;
+pub mod bun;
 pub mod cargo;
+pub mod composer;
+pub mod coursier;
+pub mod dart;
+pub mod dnf;
 pub mod dotnet;
+pub mod flatpak;
+pub mod gem;
+pub mod luarocks;
+pub mod nix;
 pub mod node;
+pub mod opam;
+pub mod pipx;
+pub mod raco;
+pub mod uv;
+pub mod xbps;
+pub mod zypper;
 
 /// Every package manager mpm can drive, in the order they are reported.
-pub const ALL: &[&str] = &["apt", "brew", "cargo", "dotnet", "npm", "pacman", "pnpm"];
-
+pub const ALL: &[&str] = &[
+    "apk", "apt", "brew", "bun", "cargo", "composer", "coursier", "dnf", "dotnet", "flatpak",
+    "gem", "luarocks", "nix", "npm", "opam", "pacman", "pipx", "pnpm", "pub", "raco", "uv", "xbps",
+    "zypper",
+];
 /// One package manager, described as argument vectors rather than shell strings.
 ///
-/// `install` and `uninstall` return a *list* of invocations because some
-/// managers accept only one package at a time (`dotnet tool install`) and some
-/// need a different command shape per package (a pinned `pacman -U <url>`).
+/// These methods build command lines; they never run them. Running is
+/// [`Invocation`]'s job and that is where failure is modelled, so returning a
+/// plain value here is not a claim that the command succeeds -- only that there
+/// is nothing to decide while assembling it. Several return a `Vec` because some
+/// managers take one package per call, such as `dotnet tool install`.
 pub trait Manager {
     fn id(&self) -> &'static str;
-
-    /// Executable probed with `which` to decide whether this manager exists here.
+    /// Probed with `which` to decide whether this manager exists here.
     fn binary(&self) -> &'static str {
         self.id()
     }
-
-    /// Build the commands that install these packages.
+    fn install_commands(&self, packages: &[PackageSpec]) -> Vec<Invocation>;
+    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation>;
+    fn list_command(&self) -> Invocation;
+    /// Bring packages up to date leaving `pinned` untouched; empty means mpm has
+    /// no upgrade it can drive safely here.
     ///
-    /// Fallible because working out how to fetch an exact version can itself
-    /// fail -- a pinned Arch package has to be located in the archive first.
-    fn install(&self, packages: &[PackageSpec]) -> Result<Vec<Invocation>>;
-
-    fn uninstall(&self, names: &[String]) -> Vec<Invocation>;
-
-    fn list(&self) -> Invocation;
-
-    /// Turn the output of [`Manager::list`] into installed packages, with
-    /// versions where the manager reports them.
+    /// Arch forbids partial upgrades, so its only correct shape is a full `-Syu`
+    /// excluding the pins. The rest have no exclusion flag and take the unpinned
+    /// names instead.
+    fn upgrade_commands(&self, _unpinned: &[String], _pinned: &[String]) -> Vec<Invocation> {
+        Vec::new()
+    }
+    /// May include packages mpm does not manage; the caller keeps only declared ones.
+    fn outdated_command(&self) -> Option<Invocation> {
+        None
+    }
+    fn parse_outdated(&self, _stdout: &str) -> Vec<PackageSpec> {
+        Vec::new()
+    }
+    /// Shown as the manager printed it, not parsed: a search result is prose, and
+    /// mpm has no reason to reshape it.
+    fn search_command(&self, _query: &str) -> Option<Invocation> {
+        None
+    }
     fn parse_list(&self, stdout: &str) -> Vec<PackageSpec>;
-
-    /// Whether an exact version can be installed *and installed again later*.
-    ///
-    /// A claim about reproducibility, not about today: a manager whose old
-    /// versions vanish from its index does not qualify. Where this is false,
-    /// declaring a version is rejected rather than approximated.
+    /// Whether a failing `list` means "nothing installed yet". composer and bun
+    /// refuse to list until their global directory has been initialised.
+    fn empty_until_first_install(&self) -> bool {
+        false
+    }
+    /// Whether an exact version can be installed *and installed again later* -- a
+    /// claim about reproducibility, not about today. Where false, declaring a
+    /// version is an error rather than approximated.
     fn supports_pinning(&self) -> bool {
         false
     }
-
-    /// Confirm these exact versions can actually be obtained.
-    ///
-    /// Runs on every `status`, so a version nothing can supply is reported even
-    /// while it happens to match what is installed today.
-    fn check_pins(&self, _specs: &[&PackageSpec]) -> Result<()> {
-        Ok(())
-    }
-
-    /// Whether this manager's package *names* can themselves select a version.
-    ///
-    /// Homebrew ships `node@20` and `python@3.12` as formula names. Declaring
-    /// such a name *and* a version is a contradiction, and is rejected rather
-    /// than silently resolved one way or the other.
+    /// Whether a name can itself select a version, as Homebrew's `node@20` does.
+    /// Such a name plus a version is a contradiction, and is rejected.
     fn name_selects_version(&self, _name: &str) -> bool {
         false
     }
 }
-
 pub fn get(id: &str) -> Option<Box<dyn Manager>> {
     match id {
+        "apk" => Some(Box::new(apk::Apk)),
         "apt" => Some(Box::new(apt::Apt)),
         "brew" => Some(Box::new(brew::Brew)),
+        "bun" => Some(Box::new(bun::Bun)),
         "cargo" => Some(Box::new(cargo::Cargo)),
+        "composer" => Some(Box::new(composer::Composer)),
+        "coursier" => Some(Box::new(coursier::Coursier)),
+        "dnf" => Some(Box::new(dnf::Dnf)),
         "dotnet" => Some(Box::new(dotnet::Dotnet)),
-        "npm" => Some(Box::new(node::Node { tool: node::NodeTool::Npm })),
+        "flatpak" => Some(Box::new(flatpak::Flatpak)),
+        "gem" => Some(Box::new(gem::Gem)),
+        "luarocks" => Some(Box::new(luarocks::Luarocks)),
+        "nix" => Some(Box::new(nix::Nix)),
+        "npm" => Some(Box::new(node::Node {
+            tool: node::NodeTool::Npm,
+        })),
+        "opam" => Some(Box::new(opam::Opam)),
         "pacman" => Some(Box::new(arch::Arch)),
-        "pnpm" => Some(Box::new(node::Node { tool: node::NodeTool::Pnpm })),
+        "pipx" => Some(Box::new(pipx::Pipx)),
+        "pnpm" => Some(Box::new(node::Node {
+            tool: node::NodeTool::Pnpm,
+        })),
+        "pub" => Some(Box::new(dart::Pub)),
+        "raco" => Some(Box::new(raco::Raco)),
+        "uv" => Some(Box::new(uv::Uv)),
+        "xbps" => Some(Box::new(xbps::Xbps)),
+        "zypper" => Some(Box::new(zypper::Zypper)),
         _ => None,
     }
 }
-
 pub fn present(manager: &dyn Manager) -> bool {
     which::which(manager.binary()).is_ok()
 }
-
-pub(crate) fn partition_pinned(packages: &[PackageSpec]) -> (Vec<&PackageSpec>, Vec<&PackageSpec>) {
-    packages.iter().partition(|spec| spec.version.is_some())
+/// One command covering every package, or nothing when there are none.
+pub(crate) fn batched<I, S>(command: Invocation, packages: I) -> Vec<Invocation>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut peekable = packages.into_iter().peekable();
+    if peekable.peek().is_none() {
+        return Vec::new();
+    }
+    vec![command.args(peekable)]
 }
-
+/// Spell a pinned version the way this manager wants it: `ripgrep@14.1.0`,
+/// `ripgrep==14.1.0`, `ripgrep:14.1.0`, `ripgrep=14.1.0`.
+pub(crate) fn pinned_with(spec: &PackageSpec, separator: &str) -> String {
+    match &spec.version {
+        Some(version) => format!("{}{separator}{version}", spec.name),
+        None => spec.name.clone(),
+    }
+}
+/// Split `name-version`, where names may contain hyphens too
+/// (`alpine-baselayout-3.7.2-r1`).
+///
+/// The version begins at the *last* hyphen followed by a digit. Checked against
+/// `xbps-uhelper getpkgname` over every package in a Void image.
+pub(crate) fn split_hyphenated(entry: &str) -> Option<PackageSpec> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    let mut boundary = entry.char_indices().filter(|(index, character)| {
+        *character == '-' && entry[index + 1..].starts_with(|next: char| next.is_ascii_digit())
+    });
+    match boundary.next_back() {
+        Some((at, _)) => Some(PackageSpec::pinned(&entry[..at], &entry[at + 1..])),
+        None => Some(PackageSpec::new(entry)),
+    }
+}
 /// Parse `name version` lines, tolerating extra trailing columns and blanks.
 pub(crate) fn parse_two_column(stdout: &str) -> Vec<PackageSpec> {
     stdout
@@ -102,42 +171,127 @@ pub(crate) fn parse_two_column(stdout: &str) -> Vec<PackageSpec> {
         })
         .collect()
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn every_advertised_manager_is_constructible() {
         for id in ALL {
-            let manager = get(id).unwrap_or_else(|| panic!("`{id}` is advertised but not registered"));
+            let manager =
+                get(id).unwrap_or_else(|| panic!("`{id}` is advertised but not registered"));
             assert_eq!(&manager.id(), id);
         }
     }
-
     #[test]
     fn the_advertised_list_is_alphabetical() {
         let mut sorted = ALL.to_vec();
         sorted.sort();
         assert_eq!(ALL, sorted.as_slice());
     }
-
     #[test]
     fn unknown_manager_is_rejected() {
         assert!(get("fisher").is_none());
-        assert!(get("paru").is_none(), "AUR helpers are an installer detail, not a manager");
+        assert!(
+            get("paru").is_none(),
+            "AUR helpers are an installer detail, not a manager"
+        );
         assert!(get("").is_none());
     }
-
     #[test]
-    fn only_managers_with_a_durable_index_accept_versions() {
-        // Registries that keep every published version qualify; an index that
-        // prunes old ones does not.
-        for id in ["cargo", "npm", "pnpm", "dotnet", "pacman"] {
-            assert!(get(id).expect("registered").supports_pinning(), "`{id}` should accept versions");
+    fn a_version_is_accepted_only_where_it_can_be_held() {
+        // Two things have to be true to pin: the manager keeps exactly one
+        // version of a package, and a package owns its own dependencies. gem
+        // breaks the first (versions coexist, so a pin never converges) and
+        // pacman the second (excluding a pin from an upgrade is a partial
+        // upgrade, which Arch does not support).
+        for id in ["cargo", "composer", "dotnet", "npm", "pipx", "pnpm", "bun"] {
+            assert!(
+                get(id).expect("registered").supports_pinning(),
+                "`{id}` should accept versions"
+            );
         }
-        for id in ["brew", "apt"] {
-            assert!(!get(id).expect("registered").supports_pinning(), "`{id}` should reject versions");
+        for id in [
+            "apk", "apt", "brew", "dnf", "flatpak", "gem", "luarocks", "pacman", "xbps",
+        ] {
+            assert!(
+                !get(id).expect("registered").supports_pinning(),
+                "`{id}` should reject versions"
+            );
         }
     }
 }
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    #[test]
+    fn nothing_to_install_means_no_command() {
+        assert!(batched(Invocation::new("x").arg("add"), Vec::<String>::new()).is_empty());
+    }
+    #[test]
+    fn everything_shares_one_command() {
+        let commands = batched(
+            Invocation::new("x").arg("add"),
+            vec!["a".to_string(), "b".to_string()],
+        );
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].args, vec!["add", "a", "b"]);
+    }
+    #[test]
+    fn a_pin_is_spelled_however_the_manager_wants() {
+        let spec = PackageSpec::pinned("ripgrep", "14.1.0");
+        assert_eq!(pinned_with(&spec, "@"), "ripgrep@14.1.0");
+        assert_eq!(pinned_with(&spec, "=="), "ripgrep==14.1.0");
+        assert_eq!(pinned_with(&spec, ":"), "ripgrep:14.1.0");
+        assert_eq!(pinned_with(&PackageSpec::new("ripgrep"), "@"), "ripgrep");
+    }
+    #[test]
+    fn a_hyphenated_entry_splits_at_the_last_hyphen_before_a_digit() {
+        // Every expectation here is what `xbps-uhelper getpkgname` returns.
+        for (entry, name, version) in [
+            ("ripgrep-15.2.0_1", "ripgrep", "15.2.0_1"),
+            (
+                "alpine-baselayout-3.7.2-r1",
+                "alpine-baselayout",
+                "3.7.2-r1",
+            ),
+            (
+                "alpine-baselayout-data-3.7.2-r1",
+                "alpine-baselayout-data",
+                "3.7.2-r1",
+            ),
+            ("wine-32bit-9.0_1", "wine-32bit", "9.0_1"),
+            ("foo-2-1.0_1", "foo-2", "1.0_1"),
+            (
+                "python3-setuptools-69.0.3_1",
+                "python3-setuptools",
+                "69.0.3_1",
+            ),
+            ("gtk+-2.24.33_1", "gtk+", "2.24.33_1"),
+            ("qt5-5.15.11_1", "qt5", "5.15.11_1"),
+        ] {
+            assert_eq!(
+                split_hyphenated(entry),
+                Some(PackageSpec::pinned(name, version)),
+                "`{entry}` split wrongly"
+            );
+        }
+    }
+    #[test]
+    fn an_entry_with_no_version_is_all_name() {
+        assert_eq!(
+            split_hyphenated("ripgrep"),
+            Some(PackageSpec::new("ripgrep"))
+        );
+        assert_eq!(
+            split_hyphenated("alpine-keys"),
+            Some(PackageSpec::new("alpine-keys"))
+        );
+    }
+    #[test]
+    fn blank_lines_are_not_packages() {
+        assert_eq!(split_hyphenated(""), None);
+        assert_eq!(split_hyphenated("   "), None);
+    }
+}
+#[cfg(test)]
+mod container;

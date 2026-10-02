@@ -1,7 +1,10 @@
 pub mod apply;
 pub mod edit;
 pub mod inherit;
+pub mod outdated;
+pub mod search;
 pub mod status;
+pub mod upgrade;
 
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,7 +24,6 @@ use crate::report;
 pub struct Ctx {
     pub layout: Layout,
     pub host: String,
-
 }
 
 impl Ctx {
@@ -34,13 +36,14 @@ impl Ctx {
     }
 }
 
-
 /// Warn when a `hosts/` tree exists but nothing in it is for this machine.
 ///
 /// A mistyped directory is otherwise silent: its packages simply never count as
 /// declared, and every one of them becomes a removal candidate.
 fn warn_unmatched_host(layout: &Layout, host: &str) {
-    let Some(known) = layout.known_hosts() else { return };
+    let Some(known) = layout.known_hosts() else {
+        return;
+    };
     if known.is_empty() || known.iter().any(|name| name == host) {
         return;
     }
@@ -58,7 +61,6 @@ pub struct ApplyOpts {
     /// Skip the confirmation prompt.
     pub yes: bool,
 }
-
 
 fn require(id: &str) -> Result<Box<dyn Manager>> {
     manager::get(id).ok_or_else(|| anyhow!("unknown package manager `{id}` (see `mpm managers`)"))
@@ -78,8 +80,8 @@ fn present_by_id(id: &str) -> bool {
 
 /// Managers to act on: the ones named, else every managed one present here.
 ///
-/// Named managers keep the order given and are de-duplicated, so `-m cargo -m
-/// cargo` is not two passes over the same manifest.
+/// Named managers keep the order given and are de-duplicated, so `cargo,cargo`
+/// is not two passes over the same manifest.
 fn selected(ctx: &Ctx, requested: &[String]) -> Result<Vec<String>> {
     if requested.is_empty() {
         return Ok(manager::ALL
@@ -89,31 +91,42 @@ fn selected(ctx: &Ctx, requested: &[String]) -> Result<Vec<String>> {
             .map(str::to_string)
             .collect());
     }
-    dedup(requested).into_iter().map(|id| require_present(&id).map(|_| id)).collect()
+    dedup(requested)
+        .into_iter()
+        .map(|id| require_present(&id).map(|_| id))
+        .collect()
 }
 
 /// Keep the first occurrence of each name, in the order given.
 pub(crate) fn dedup(names: &[String]) -> Vec<String> {
     let mut seen = BTreeSet::new();
-    names.iter().filter(|name| seen.insert((*name).clone())).cloned().collect()
+    names
+        .iter()
+        .filter(|name| seen.insert((*name).clone()))
+        .cloned()
+        .collect()
 }
 
-
 fn installed_map(manager: &dyn Manager) -> Result<BTreeMap<String, PackageSpec>> {
-    let stdout = manager.list().capture()?;
-    Ok(manager.parse_list(&stdout).into_iter().map(|spec| (spec.name.clone(), spec)).collect())
+    let stdout = match manager.list_command().capture() {
+        Ok(stdout) => stdout,
+        // Some managers report a failure rather than an empty list until their
+        // first global install; that is not a fault.
+        Err(_) if manager.empty_until_first_install() => String::new(),
+        Err(error) => return Err(error),
+    };
+    Ok(manager
+        .parse_list(&stdout)
+        .into_iter()
+        .map(|spec| (spec.name.clone(), spec))
+        .collect())
 }
 
 /// Reconcile one manager against its manifest.
 ///
 /// Takes the manager as a parameter rather than looking it up, so tests can
 /// drive this with a stand-in instead of a real package manager.
-fn reconcile_manager(
-    layout: &Layout,
-    host: &str,
-
-    manager: &dyn Manager,
-) -> Result<Reconciliation> {
+fn reconcile_manager(layout: &Layout, host: &str, manager: &dyn Manager) -> Result<Reconciliation> {
     let id = manager.id();
     let resolved = layout.resolve(id, host)?;
 
@@ -123,12 +136,12 @@ fn reconcile_manager(
     let installed = installed_map(manager)
         .with_context(|| format!("could not list installed packages for `{id}`"))?;
 
-    Ok(reconcile::compute(
+    reconcile::compute(
         id,
         &resolved.declared,
         &installed,
         manager.supports_pinning(),
-    ))
+    )
 }
 
 /// Results come back in `ids` order, so output is identical run to run.
@@ -148,8 +161,9 @@ fn reconcile_all(ctx: &Ctx, ids: &[String]) -> Vec<(String, Result<Reconciliatio
         .cloned()
         .zip(handles)
         .map(|(id, handle)| {
-            let result =
-                handle.join().unwrap_or_else(|_| Err(anyhow!("the worker for `{id}` panicked")));
+            let result = handle
+                .join()
+                .unwrap_or_else(|_| Err(anyhow!("the worker for `{id}` panicked")));
             (id, result)
         })
         .collect()
@@ -162,20 +176,24 @@ fn nothing_managed(ctx: &Ctx) -> String {
     )
 }
 
-
 pub fn managers(ctx: &Ctx) -> Result<()> {
     for id in manager::ALL {
         let present = if present_by_id(id) { "found" } else { "-" };
-        let managed =
-            if ctx.layout.is_managed(id, &ctx.host) { "managed" } else { "-" };
+        let managed = if ctx.layout.is_managed(id, &ctx.host) {
+            "managed"
+        } else {
+            "-"
+        };
         println!("{id:<8} {present:<7} {managed}");
     }
     println!();
     println!("{}", report::dim(&format!("host: {}", ctx.host)));
-    println!("{}", report::dim(&format!("manifests: {}", ctx.layout.root().display())));
+    println!(
+        "{}",
+        report::dim(&format!("manifests: {}", ctx.layout.root().display()))
+    );
     Ok(())
 }
-
 
 pub(crate) fn run_visibly(command: &Invocation) -> Result<()> {
     println!("{} {}", report::dim("$"), command.display());
@@ -192,18 +210,18 @@ pub(crate) mod fixture {
         pub installed: &'static str,
         pub pinning: bool,
     }
-    
+
     impl Manager for Fake {
         fn id(&self) -> &'static str {
             "cargo" // borrow a real id so Layout paths line up
         }
-        fn install(&self, packages: &[PackageSpec]) -> Result<Vec<Invocation>> {
-            Ok(vec![Invocation::new("true").args(packages.iter().map(|spec| spec.name.clone()))])
+        fn install_commands(&self, packages: &[PackageSpec]) -> Vec<Invocation> {
+            vec![Invocation::new("true").args(packages.iter().map(|spec| spec.name.clone()))]
         }
-        fn uninstall(&self, names: &[String]) -> Vec<Invocation> {
+        fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
             vec![Invocation::new("true").args(names.iter().cloned())]
         }
-        fn list(&self) -> Invocation {
+        fn list_command(&self) -> Invocation {
             Invocation::new("printf").arg("%s").arg(self.installed)
         }
         fn parse_list(&self, stdout: &str) -> Vec<PackageSpec> {
@@ -213,9 +231,9 @@ pub(crate) mod fixture {
             self.pinning
         }
     }
-    
+
     pub struct TempDir(pub PathBuf);
-    
+
     impl TempDir {
         pub fn new(tag: &str) -> Self {
             let unique = std::time::SystemTime::now()
@@ -227,22 +245,21 @@ pub(crate) mod fixture {
             Self(path)
         }
     }
-    
+
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-    
+
     pub fn seed(path: &Path, body: &str) {
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         fs::write(path, body).expect("write");
     }
-    
+
     pub fn run(layout: &Layout, fake: &Fake) -> Result<Reconciliation> {
         reconcile_manager(layout, "testbox", fake)
     }
-    
 }
 
 #[cfg(test)]
@@ -262,7 +279,10 @@ mod tests {
         let layout = Layout::at(&dir.0);
         seed(&layout.common("cargo"), "ripgrep\nvim\n");
 
-        let fake = Fake { installed: "vim 9.1\nnano 8.0\n", pinning: false };
+        let fake = Fake {
+            installed: "vim 9.1\nnano 8.0\n",
+            pinning: false,
+        };
         let changes = run(&layout, &fake).expect("reconciles");
 
         assert_eq!(changes.install, vec![PackageSpec::new("ripgrep")]);
@@ -275,7 +295,10 @@ mod tests {
         let layout = Layout::at(&dir.0);
         seed(&layout.common("cargo"), "nano\n");
 
-        let fake = Fake { installed: "nano 8.0\nbat 0.24\n", pinning: false };
+        let fake = Fake {
+            installed: "nano 8.0\nbat 0.24\n",
+            pinning: false,
+        };
         let changes = run(&layout, &fake).expect("reconciles");
 
         assert_eq!(changes.remove, vec!["bat"]);
@@ -288,7 +311,10 @@ mod tests {
         seed(&layout.common("cargo"), "vim\n");
         seed(&layout.host("testbox", "cargo"), "tlp\n");
 
-        let fake = Fake { installed: "vim 9.1\ntlp 1.6\n", pinning: false };
+        let fake = Fake {
+            installed: "vim 9.1\ntlp 1.6\n",
+            pinning: false,
+        };
         let changes = run(&layout, &fake).expect("reconciles");
 
         assert!(!changes.has_work(), "both layers count as declared");
@@ -300,9 +326,16 @@ mod tests {
         let layout = Layout::at(&dir.0);
         seed(&layout.common("cargo"), "ripgrep 14.1.0\n");
 
-        let fake = Fake { installed: "", pinning: false };
+        let fake = Fake {
+            installed: "",
+            pinning: false,
+        };
         let error = run(&layout, &fake).expect_err("must refuse");
-        assert!(error.to_string().contains("cannot install a specific version"));
+        assert!(
+            error
+                .to_string()
+                .contains("cannot install a specific version")
+        );
     }
 
     #[test]
@@ -311,11 +344,13 @@ mod tests {
         let layout = Layout::at(&dir.0);
         seed(&layout.common("cargo"), "ripgrep 14.1.0\n");
 
-        let fake = Fake { installed: "ripgrep 14.0.0\n", pinning: true };
+        let fake = Fake {
+            installed: "ripgrep 14.0.0\n",
+            pinning: true,
+        };
         let changes = run(&layout, &fake).expect("reconciles");
 
         assert_eq!(changes.repin.len(), 1);
         assert_eq!(changes.repin[0].installed, "14.0.0");
     }
-
 }

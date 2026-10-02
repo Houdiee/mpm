@@ -12,9 +12,7 @@ use grammar::PackageSpec;
 /// Which layer an edit should be written to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Layer {
-    /// Applies to every machine.
     Common,
-    /// Applies only to the named host.
     Host(String),
 }
 
@@ -47,11 +45,14 @@ impl Layout {
         if let Ok(value) = std::env::var("MPM_CONFIG_DIR") {
             let value = value.trim();
             if !value.is_empty() {
-                return Ok(Self { root: PathBuf::from(value) });
+                return Ok(Self {
+                    root: PathBuf::from(value),
+                });
             }
         }
-        let base = dirs::config_dir().context("could not determine your config directory")?;
-        Ok(Self { root: base.join("mpm") })
+        Ok(Self {
+            root: config_home()?.join("mpm"),
+        })
     }
 
     #[cfg(test)]
@@ -94,16 +95,16 @@ impl Layout {
         }
     }
 
-    /// Layer files for a manager, lowest priority first.
-    ///
-    /// `common` is the base and the host layer has the final say, because it is
-    /// the more specific of the two.
+    /// Layer files for a manager, lowest priority first: the host layer is more
+    /// specific than `common`, so it has the final say.
     pub fn layer_paths(&self, manager: &str, host: &str) -> Vec<PathBuf> {
         vec![self.common(manager), self.host(host, manager)]
     }
 
     pub fn is_managed(&self, manager: &str, host: &str) -> bool {
-        self.layer_paths(manager, host).iter().any(|path| path.exists())
+        self.layer_paths(manager, host)
+            .iter()
+            .any(|path| path.exists())
     }
 
     /// Collapse every layer into one declared state.
@@ -126,6 +127,24 @@ impl Layout {
     }
 }
 
+/// Where a command-line tool's configuration belongs.
+///
+/// `dirs::config_dir()` answers `~/Library/Application Support` on macOS, which
+/// is not where anyone looks for something like this -- and not where the README
+/// tells them to. XDG first, then `~/.config`, on every platform.
+fn config_home() -> Result<PathBuf> {
+    if let Some(configured) = std::env::var_os("XDG_CONFIG_HOME") {
+        let path = PathBuf::from(configured);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        return Ok(home.join(".config"));
+    }
+    dirs::config_dir().context("could not determine your config directory")
+}
+
 /// This machine's name, used to select the host layer.
 ///
 /// Guessing would silently select the wrong layer, so failure is an error with
@@ -143,12 +162,12 @@ pub fn hostname() -> Result<String> {
             return Ok(value.to_string());
         }
     }
-    if let Ok(output) = std::process::Command::new("hostname").output() {
-        if output.status.success() {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !value.is_empty() {
-                return Ok(value);
-            }
+    if let Ok(output) = std::process::Command::new("hostname").output()
+        && output.status.success()
+    {
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !value.is_empty() {
+            return Ok(value);
         }
     }
     bail!("could not determine this machine's hostname; set MPM_HOST to name it")
@@ -227,12 +246,14 @@ mod tests {
         seed(&layout.host("thinkpad", "cargo"), "ripgrep 14.2.0\n");
 
         let resolved = layout.resolve("cargo", "thinkpad").expect("resolve");
-        assert_eq!(resolved.declared["ripgrep"], PackageSpec::pinned("ripgrep", "14.2.0"));
+        assert_eq!(
+            resolved.declared["ripgrep"],
+            PackageSpec::pinned("ripgrep", "14.2.0")
+        );
     }
 
     #[test]
     fn an_undetectable_hostname_is_an_error_not_a_guess() {
-        // Guessing would silently select the wrong layer.
         let previous = std::env::var("MPM_HOST").ok();
         unsafe { std::env::set_var("MPM_HOST", "  ") };
         let guessed = hostname();
@@ -253,7 +274,10 @@ mod tests {
 
         seed(&layout.host("desktop", "pacman"), "nvidia\n");
         seed(&layout.host("laptop", "pacman"), "tlp\n");
-        assert_eq!(layout.known_hosts(), Some(vec!["desktop".to_string(), "laptop".to_string()]));
+        assert_eq!(
+            layout.known_hosts(),
+            Some(vec!["desktop".to_string(), "laptop".to_string()])
+        );
     }
 
     #[test]
@@ -271,7 +295,9 @@ mod tests {
         let layout = Layout::at(&dir.0);
         seed(&layout.common("cargo"), "# tools\nripgrep 14.1.0 oops\n");
 
-        let error = layout.resolve("cargo", "thinkpad").expect_err("must reject");
+        let error = layout
+            .resolve("cargo", "thinkpad")
+            .expect_err("must reject");
         let text = format!("{error:#}");
         assert!(text.contains("/cargo:2"), "got: {text}");
     }

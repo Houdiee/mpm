@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::manager::Manager;
@@ -9,6 +10,58 @@ use crate::manifest::grammar::PackageSpec;
 pub struct Repin {
     pub spec: PackageSpec,
     pub installed: String,
+}
+
+impl Repin {
+    /// `Less` means the declared version is older than the installed one.
+    pub fn direction(&self) -> Option<Ordering> {
+        compare_versions(self.spec.version.as_deref()?, &self.installed)
+    }
+}
+
+/// Order two version strings, or admit that they cannot be ordered.
+///
+/// Pre-release ranking (`1.0.0-rc1` below `1.0.0`) is deliberately not modelled:
+/// across sixteen managers the spellings do not agree, so anything undecidable
+/// returns `None` and is reported without a direction rather than labelled wrongly.
+pub fn compare_versions(left: &str, right: &str) -> Option<Ordering> {
+    let left = split_version(left);
+    let right = split_version(right);
+
+    for index in 0..left.len().max(right.len()) {
+        let ordering = match (left.get(index), right.get(index)) {
+            (Some(a), Some(b)) => match (a.parse::<u64>(), b.parse::<u64>()) {
+                (Ok(a), Ok(b)) => a.cmp(&b),
+                _ if a == b => Ordering::Equal,
+                _ => return None,
+            },
+            // A missing segment stands in as zero, so `1.2` equals `1.2.0` while
+            // `1.2.1` is above both.
+            (Some(a), None) => match a.parse::<u64>() {
+                Ok(0) => Ordering::Equal,
+                Ok(_) => return Some(Ordering::Greater),
+                Err(_) => return None,
+            },
+            (None, Some(b)) => match b.parse::<u64>() {
+                Ok(0) => Ordering::Equal,
+                Ok(_) => return Some(Ordering::Less),
+                Err(_) => return None,
+            },
+            (None, None) => break,
+        };
+        if ordering != Ordering::Equal {
+            return Some(ordering);
+        }
+    }
+
+    Some(Ordering::Equal)
+}
+
+fn split_version(version: &str) -> Vec<&str> {
+    version
+        .split(['.', '-', '+', '_', ':', '~'])
+        .filter(|segment| !segment.is_empty())
+        .collect()
 }
 
 /// The changes that would bring one manager in line with its manifest.
@@ -41,17 +94,17 @@ impl Reconciliation {
 
 /// Reject a manifest whose pins this manager cannot carry out.
 ///
-/// A pin mpm cannot honour is an error, not a warning: installing an arbitrary
-/// version when an exact one was asked for is the kind of quiet substitution
-/// this tool exists to avoid.
+/// An error rather than a warning: installing an arbitrary version when an exact
+/// one was asked for is the quiet substitution this tool exists to avoid.
 pub fn validate(manager: &dyn Manager, declared: &BTreeMap<String, PackageSpec>) -> Result<()> {
     let mut problems = Vec::new();
 
     for (name, spec) in declared {
-        let Some(version) = &spec.version else { continue };
+        let Some(version) = &spec.version else {
+            continue;
+        };
 
         if manager.name_selects_version(name) {
-            // `node@20 20.11.0` on Homebrew: the name already chose a version.
             problems.push(format!(
                 "`{name} {version}`: the name `{name}` already selects a version -- drop `{version}`"
             ));
@@ -67,10 +120,7 @@ pub fn validate(manager: &dyn Manager, declared: &BTreeMap<String, PackageSpec>)
         bail!("{}", problems.join("\n  "));
     }
 
-    // Here rather than at install time, so a version nothing can supply is
-    // reported by `status` too, not only when mpm goes to act on it.
-    let pinned: Vec<&PackageSpec> = declared.values().filter(|spec| spec.version.is_some()).collect();
-    manager.check_pins(&pinned)
+    Ok(())
 }
 
 /// Compare declared state against installed state.
@@ -82,25 +132,47 @@ pub fn compute(
     declared: &BTreeMap<String, PackageSpec>,
     installed: &BTreeMap<String, PackageSpec>,
     supports_pinning: bool,
-) -> Reconciliation {
-    let mut changes = Reconciliation { manager: manager.to_string(), ..Reconciliation::default() };
+) -> Result<Reconciliation> {
+    let mut changes = Reconciliation {
+        manager: manager.to_string(),
+        ..Reconciliation::default()
+    };
+    let mut unverifiable = Vec::new();
 
     for (name, wanted) in declared {
         match installed.get(name) {
             None => changes.install.push(wanted.clone()),
             Some(present) => {
-                // An unknown installed version counts as satisfied, rather than
-                // reinstalling on every single run.
+                // Pins here were already rejected by `validate`.
                 if !supports_pinning {
                     continue;
                 }
-                if let (Some(want), Some(have)) = (&wanted.version, &present.version) {
-                    if want != have {
-                        changes.repin.push(Repin { spec: wanted.clone(), installed: have.clone() });
-                    }
+                let Some(want) = &wanted.version else {
+                    continue;
+                };
+                // Every pinning manager reports a version for everything it lists,
+                // so a missing one means the output did not parse. Calling that a
+                // satisfied pin would report clean on the very drift mpm catches.
+                let Some(have) = &present.version else {
+                    unverifiable.push(name.clone());
+                    continue;
+                };
+                if want != have {
+                    changes.repin.push(Repin {
+                        spec: wanted.clone(),
+                        installed: have.clone(),
+                    });
                 }
             }
         }
+    }
+
+    if !unverifiable.is_empty() {
+        bail!(
+            "`{manager}` listed {} without a version, so the declared pin cannot be \
+             verified -- its list output may have changed format",
+            unverifiable.join(", ")
+        );
     }
 
     for name in installed.keys() {
@@ -110,7 +182,7 @@ pub fn compute(
         changes.remove.push(name.clone());
     }
 
-    changes
+    Ok(changes)
 }
 
 #[cfg(test)]
@@ -118,21 +190,27 @@ mod tests {
     use super::*;
 
     fn map(specs: &[PackageSpec]) -> BTreeMap<String, PackageSpec> {
-        specs.iter().map(|spec| (spec.name.clone(), spec.clone())).collect()
+        specs
+            .iter()
+            .map(|spec| (spec.name.clone(), spec.clone()))
+            .collect()
     }
-
 
     fn changes_of(
         declared: &[PackageSpec],
         installed: &[PackageSpec],
         pinning: bool,
     ) -> Reconciliation {
-        compute("test", &map(declared), &map(installed), pinning)
+        compute("test", &map(declared), &map(installed), pinning).expect("reconciles")
     }
 
     #[test]
     fn matching_state_is_quiet() {
-        let changes = changes_of(&[PackageSpec::new("vim")], &[PackageSpec::new("vim")], false);
+        let changes = changes_of(
+            &[PackageSpec::new("vim")],
+            &[PackageSpec::new("vim")],
+            false,
+        );
         assert!(!changes.has_work());
         assert!(!changes.has_work());
     }
@@ -160,7 +238,10 @@ mod tests {
         );
         assert_eq!(
             changes.repin,
-            vec![Repin { spec: PackageSpec::pinned("ripgrep", "14.1.0"), installed: "14.0.0".into() }]
+            vec![Repin {
+                spec: PackageSpec::pinned("ripgrep", "14.1.0"),
+                installed: "14.0.0".into()
+            }]
         );
         assert!(changes.install.is_empty());
         assert!(changes.remove.is_empty());
@@ -177,11 +258,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_installed_version_is_assumed_satisfied() {
-        // apt reports manual packages without versions. Treating that as drift
-        // would reinstall every pinned package on every run.
+    fn an_unverifiable_pin_is_an_error_not_a_pass() {
+        let error = compute(
+            "test",
+            &map(&[PackageSpec::pinned("ripgrep", "14.1.0")]),
+            &map(&[PackageSpec::new("ripgrep")]),
+            true,
+        )
+        .expect_err("must refuse to guess");
+        assert!(error.to_string().contains("ripgrep"));
+        assert!(error.to_string().contains("cannot be verified"));
+    }
+
+    #[test]
+    fn an_unpinned_package_needs_no_installed_version() {
         let changes = changes_of(
-            &[PackageSpec::pinned("ripgrep", "14.1.0")],
+            &[PackageSpec::new("ripgrep")],
             &[PackageSpec::new("ripgrep")],
             true,
         );
@@ -191,26 +283,83 @@ mod tests {
     #[test]
     fn repins_are_installed_alongside_new_packages() {
         let changes = changes_of(
-            &[PackageSpec::new("bat"), PackageSpec::pinned("ripgrep", "14.1.0")],
+            &[
+                PackageSpec::new("bat"),
+                PackageSpec::pinned("ripgrep", "14.1.0"),
+            ],
             &[PackageSpec::pinned("ripgrep", "14.0.0")],
             true,
         );
         assert_eq!(
             changes.to_install(),
-            vec![PackageSpec::new("bat"), PackageSpec::pinned("ripgrep", "14.1.0")]
+            vec![
+                PackageSpec::new("bat"),
+                PackageSpec::pinned("ripgrep", "14.1.0")
+            ]
         );
+    }
+
+    #[test]
+    fn a_repin_knows_which_way_it_moves() {
+        let up = Repin {
+            spec: PackageSpec::pinned("ripgrep", "14.1.0"),
+            installed: "14.0.0".into(),
+        };
+        assert_eq!(up.direction(), Some(Ordering::Greater));
+
+        let down = Repin {
+            spec: PackageSpec::pinned("ripgrep", "14.0.0"),
+            installed: "14.1.0".into(),
+        };
+        assert_eq!(down.direction(), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn versions_compare_by_number_not_by_text() {
+        // The whole point: "9" sorts above "10" as text, and below it as a number.
+        assert_eq!(compare_versions("1.10.0", "1.9.0"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("0.15.0", "0.17.0"), Some(Ordering::Less));
+        assert_eq!(
+            compare_versions("8.0.100", "8.0.100"),
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn a_longer_numeric_version_is_the_higher_one() {
+        assert_eq!(compare_versions("1.2.1", "1.2"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("1.2", "1.2.1"), Some(Ordering::Less));
+        // Equal despite differing text, which is why a repin may have no direction.
+        assert_eq!(compare_versions("1.2", "1.2.0"), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn an_unrankable_pair_is_admitted_rather_than_guessed() {
+        // Pre-release ordering differs per manager, so mpm declines to rank it
+        // instead of calling a downgrade an upgrade.
+        assert_eq!(compare_versions("1.0.0-rc1", "1.0.0"), None);
+        assert_eq!(compare_versions("2.0-alpha", "2.0-beta"), None);
+        assert_eq!(compare_versions("stable", "1.0"), None);
     }
 
     #[test]
     fn output_is_ordered_not_hash_ordered() {
         // Output must be identical run to run, or it cannot be diffed or scripted.
-        let declared = [PackageSpec::new("zsh"), PackageSpec::new("bat"), PackageSpec::new("micro")];
+        let declared = [
+            PackageSpec::new("zsh"),
+            PackageSpec::new("bat"),
+            PackageSpec::new("micro"),
+        ];
         let first = changes_of(&declared, &[], false);
         let second = changes_of(&declared, &[], false);
         assert_eq!(first.install, second.install);
         assert_eq!(
             first.install,
-            vec![PackageSpec::new("bat"), PackageSpec::new("micro"), PackageSpec::new("zsh")]
+            vec![
+                PackageSpec::new("bat"),
+                PackageSpec::new("micro"),
+                PackageSpec::new("zsh")
+            ]
         );
     }
 }
@@ -221,28 +370,45 @@ mod validation_tests {
     use crate::manager;
 
     fn declared(specs: &[PackageSpec]) -> BTreeMap<String, PackageSpec> {
-        specs.iter().map(|spec| (spec.name.clone(), spec.clone())).collect()
+        specs
+            .iter()
+            .map(|spec| (spec.name.clone(), spec.clone()))
+            .collect()
     }
 
     #[test]
     fn a_pin_on_a_manager_that_cannot_pin_is_an_error() {
         let brew = manager::get("brew").expect("brew");
-        let error = validate(brew.as_ref(), &declared(&[PackageSpec::pinned("ripgrep", "14.1.0")]))
-            .expect_err("must reject");
-        assert!(error.to_string().contains("cannot install a specific version"));
+        let error = validate(
+            brew.as_ref(),
+            &declared(&[PackageSpec::pinned("ripgrep", "14.1.0")]),
+        )
+        .expect_err("must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot install a specific version")
+        );
     }
 
     #[test]
     fn a_pin_on_a_manager_that_can_pin_is_accepted() {
         let cargo = manager::get("cargo").expect("cargo");
-        validate(cargo.as_ref(), &declared(&[PackageSpec::pinned("ripgrep", "14.1.0")])).expect("accepted");
+        validate(
+            cargo.as_ref(),
+            &declared(&[PackageSpec::pinned("ripgrep", "14.1.0")]),
+        )
+        .expect("accepted");
     }
 
     #[test]
     fn a_versioned_formula_plus_a_pin_is_a_contradiction() {
         let brew = manager::get("brew").expect("brew");
-        let error = validate(brew.as_ref(), &declared(&[PackageSpec::pinned("node@20", "20.11.0")]))
-            .expect_err("must reject");
+        let error = validate(
+            brew.as_ref(),
+            &declared(&[PackageSpec::pinned("node@20", "20.11.0")]),
+        )
+        .expect_err("must reject");
         assert!(error.to_string().contains("already selects a version"));
     }
 
@@ -266,11 +432,13 @@ mod validation_tests {
         let brew = manager::get("brew").expect("brew");
         let error = validate(
             brew.as_ref(),
-            &declared(&[PackageSpec::pinned("ripgrep", "14.1.0"), PackageSpec::pinned("bat", "0.24.0")]),
+            &declared(&[
+                PackageSpec::pinned("ripgrep", "14.1.0"),
+                PackageSpec::pinned("bat", "0.24.0"),
+            ]),
         )
         .expect_err("must reject");
         assert!(error.to_string().contains("ripgrep"));
         assert!(error.to_string().contains("bat"));
     }
 }
-

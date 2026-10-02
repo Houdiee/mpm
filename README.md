@@ -121,37 +121,70 @@ all — declaring one is an error, never an approximation.
 | manager | versions | why |
 |-|-|-|
 | cargo | **yes** | crates.io is immutable; yanked crates still install by exact version |
-| npm, pnpm | **yes** | the registry is immutable; unpublish is restricted |
+| npm, pnpm, bun | **yes** | the registry is immutable; unpublish is restricted |
 | dotnet | **yes** | NuGet is immutable |
-| pacman | **yes** | the Arch Linux Archive keeps every official build permanently |
-| apt | **no** | Debian and Ubuntu prune old versions; `name=version` works today and fails later |
-| brew | **no** | no general way to install an old version — use a versioned formula, `node@20` |
+| pipx | **yes** | PyPI keeps published releases |
+| composer | **yes** | Packagist keeps published releases |
+| apt, dnf | **no** | old versions are pruned from the archives |
+| apk, xbps | **no** | one version per release branch |
+| brew | **no** | no general way to install an old version — use `node@20` |
+| flatpak | **no** | builds are addressed by commit, not version |
+| luarocks | **no** | takes a version as a separate argument, not per package |
+| **gem** | **no** | versions coexist, so a pin can never converge (below) |
+| **pacman** | **no** | excluding a pin from an upgrade is a partial upgrade (below) |
 
-Two further rules:
+A name that already selects a version *and* a version is a contradiction:
+`node@20 20.11.0` is rejected.
 
-- A name that already selects a version *and* a version is a contradiction:
-  `node@20 20.11.0` is rejected.
-- On pacman the version must include the pkgrel exactly as `pacman -Qe` prints
-  it (`14.1.0-1`), and the package must be in the official repositories. **AUR
-  packages cannot be pinned** — nothing archives them — and that is reported by
-  `mpm status`, not only when installing.
+### When a version can be pinned at all
 
-### A note on Arch
+Two things have to be true, and they rule out more managers than you would guess.
 
-`pacman`, `paru` and `yay` read the same database, so mpm exposes one `pacman`
-manager. An AUR helper is an installation detail: if `paru` or `yay` is on
-`$PATH` it is used to install, and everything else goes through `pacman`.
-
-A pinned package is fetched straight from the archive:
+**The manager must keep exactly one version of a package.** RubyGems does not:
 
 ```console
-$ pacman -U https://archive.archlinux.org/packages/r/ripgrep/ripgrep-14.1.0-1-x86_64.pkg.tar.zst
+$ gem install tilt -v 2.0.11 && gem install tilt -v 2.3.0
+$ gem list | grep tilt
+tilt (2.3.0, 2.0.11)        # both, side by side
 ```
 
-Two things this does not do: the dependencies come from your *current* repos, so
-a very old package may not resolve; and `pacman -Syu` will upgrade a pinned
-package back. mpm treats that the same as any other drift — `status` reports it
-and `apply` puts it back.
+Pinning `tilt 2.0.11` there would have mpm read the newest (2.3.0), install
+2.0.11 — which succeeds and removes nothing — and report the same drift on every
+run afterwards, forever.
+
+**A package must own its own dependencies.** This is what rules out pacman. If
+`A` is pinned and `B` depends on a newer `A`, then upgrading `B` while holding
+`A` is a *partial upgrade*, which Arch does not support and which leaves `B`
+linked against a version of `A` that is not installed. `pacman --ignore` will do
+it and only warn.
+
+So pinning is offered exactly where a package is installed once and carries its
+own tree: cargo, npm, pnpm, bun, pipx, dotnet, composer. Everywhere else a
+declared version is rejected.
+
+### What mpm does when a version will not move anyway
+
+It cannot force a manager to honour a pin. What it can do is refuse to claim
+success. After `apply` runs, mpm reads the installed state back and names
+anything the run was supposed to change but did not:
+
+```console
+$ mpm cargo apply --yes
+1 to change
+cargo done
+  $ cargo install ripgrep@14.1.0
+
+warning: the following did not take effect:
+  cargo
+    ripgrep is still at 14.0.0, not 14.1.0
+A version that will not move is usually a dependency holding it there; unpin it,
+or pin whatever requires it too.
+```
+
+A command that exits zero and changes nothing is the one failure a convergence
+tool must not report as success. This catches the whole class: a pin fighting a
+dependency, a manager that declines to downgrade, a repin that quietly no-ops.
+
 ## Getting started
 
 ```console
@@ -192,6 +225,9 @@ Managers come first and are comma-separated; packages are space-separated.
 | `mpm <managers> pin <pkg>…` | lock packages you already have |
 | `mpm <managers> unpin <pkg>…` | let them track whatever is current |
 | `mpm <managers> remove <pkg>…` | undeclare and uninstall now |
+| `mpm [managers] search <query>` | search each manager's own index |
+| `mpm [managers] outdated` | declared packages with a newer version available |
+| `mpm [managers] upgrade` | bring packages up to date, leaving pins alone |
 | `mpm managers` | supported managers, host, manifest path |
 
 ```console
@@ -210,6 +246,69 @@ $ mpm add ripgrep
 error: name a package manager first, as in `mpm cargo add ...`
 ```
 
+`outdated` is read-only and exits zero either way: a newer version existing is
+not a fault, since an entry without a version means "any version" and the
+manifest is satisfied. It separates the two cases, because only one is mpm's to
+act on:
+
+```console
+$ mpm pacman outdated
+pacman
+  ripgrep 14.1.0-1 -> 15.2.0-1
+  bat -> 0.25.0-1 (unpinned; an ordinary upgrade picks this up)
+
+1 pinned package(s) behind.
+```
+
+`upgrade` is the one upgrade only mpm can run, because no package manager knows
+which of its packages your manifests pin:
+
+```console
+$ mpm pacman upgrade --dry-run
+pacman
+  $ pacman -Syu --noconfirm --ignore ripgrep
+
+note: 1 pinned package(s) left alone:
+  pacman: ripgrep
+```
+
+Managers split two ways here, which is why this is per-manager rather than one
+command. Arch forbids partial upgrades, so the only safe shape is a full `-Syu`
+with the pins excluded. Everything else has no exclusion flag but upgrades named
+packages happily, so it is handed the unpinned ones instead:
+
+```console
+$ mpm cargo upgrade --dry-run
+cargo
+  $ cargo install --force bat fd-find
+
+note: 1 pinned package(s) left alone:
+  cargo: ripgrep
+```
+
+Being a write, `upgrade` goes through the same plan, confirmation and parallel
+execution as `apply`, and takes the same `--dry-run` and `--yes`. `pnpm`,
+`flatpak`, `bun`, `luarocks` and `dotnet` have no upgrade mpm can drive safely
+and are skipped.
+
+`search` is a pass-through: it runs each manager's own search and shows the
+output unchanged. Nothing is parsed, because a search result is prose --
+descriptions, relevance ordering, highlighting -- and mpm has no business
+reshaping it. What it adds is the question only mpm can answer: of the managers
+*you* use, which have this?
+
+```console
+$ mpm search ripgrep
+cargo
+  ripgrep = "15.2.0"    # recursively searches directories for a regex pattern
+pacman
+  extra/ripgrep 15.2.0-1
+```
+
+Unlike the other commands, `search` considers every manager installed on the
+machine rather than only managed ones -- deciding where to install something from
+is the point. `pnpm` and `bun` have no search of their own and are skipped.
+
 Bare `mpm` prints help rather than doing anything.
 
 Versions are always deliberate. `mpm inherit` records **names only**, so ordinary
@@ -220,14 +319,15 @@ Pinning is reachable two ways, because it is both something you decide when
 declaring a package and something you do to one you already have:
 
 ```console
-$ mpm pacman add --pin ripgrep   # declare and lock in one step
-$ mpm pacman pin ripgrep         # lock what is already declared
-$ mpm pacman unpin ripgrep       # back to tracking current
+$ mpm cargo add --pin ripgrep   # declare and lock in one step
+$ mpm cargo pin ripgrep         # lock what is already declared
+$ mpm cargo unpin ripgrep       # back to tracking current
 ```
 
-Both read the installed version off the machine, so you never type a version by
-hand — which matters on Arch, where the pkgrel (`14.1.0-1`) is part of it. You
-can still write the pair yourself if you want: `mpm cargo add 'ripgrep 14.1.0'`.
+Both read the installed version off the machine, so you never type one by hand.
+You can still write the pair yourself: `mpm cargo add 'ripgrep 14.1.0'`. A
+manager that cannot hold a version rejects the attempt — see above for which,
+and why.
 
 `add`, `pin`, `unpin` and `remove` take `--host` to target this machine's layer
 instead of the shared one.
@@ -261,10 +361,31 @@ one would block with nothing on screen to explain why.
 
 ## Supported managers
 
-`apt`, `brew`, `cargo`, `dotnet`, `npm`, `pacman`, `pnpm`.
+`apk`, `apt`, `brew`, `bun`, `cargo`, `composer`, `dnf`, `dotnet`, `flatpak`, `gem`,
+`luarocks`, `npm`, `pacman`, `pipx`, `pnpm`, `xbps`.
 
 A manager is used when its executable is on `$PATH` *and* it has at least one
 manifest layer. `mpm managers` shows both.
+
+A manager earns a place here only when its *explicitly installed* set can be
+listed, and only once its real output has been captured by running it. Nothing
+here is written from documentation alone.
+
+Each manager is one file under `src/manager/`, holding its command shapes, its
+output parser, and tests against output captured from the real tool.
+
+Some obvious candidates are deliberately absent:
+
+- `go` and `deno` have no command that lists what they installed.
+- `nix profile` and `helm plugin` list short names but install from flake refs
+  and URLs, so what they report cannot be fed back to them.
+- `rpm` and `zypper` list dependencies alongside the packages you asked for,
+  with no flag to separate them -- the same reason mpm uses `pacman -Qe`
+  rather than `pacman -Q`.
+
+`apk` is the one exception to the "explicitly installed" rule: Alpine draws no
+line between a package you asked for and one pulled in as a dependency, so
+inheriting there records the base system too.
 
 ## Environment
 
@@ -281,6 +402,54 @@ manifest layer. `mpm managers` shows both.
 $ cargo build --release
 $ install -Dm755 target/release/mpm ~/.local/bin/mpm
 ```
+
+Tests come in three tiers, fastest first.
+
+**Unit tests** need nothing but a toolchain:
+
+```console
+$ nix-shell --run 'cargo test'
+```
+
+**Container tests** run each manager in its own image, install a known package
+with the real tool, and feed what it prints straight into mpm's parser. Nothing
+is recorded to disk, so a manager that changes its output format in next week's
+release fails a test here rather than mis-parsing somebody's machine:
+
+```console
+$ MPM_CONTAINERS=1 cargo test container          # every manager
+$ MPM_CONTAINERS=1 cargo test container::pacman  # just one
+...
+pacman: 2 packages parsed from archlinux:latest
+apt: 1 packages parsed from debian:stable-slim
+```
+
+Covered: `apk` (Alpine), `apt` (Debian), `dnf` (Fedora), `pacman` (Arch),
+`xbps` (Void), `gem`,
+`pipx`, `composer`, `npm`, `pnpm`, `bun`, `cargo`, `dotnet`. The same container
+also checks each manager's `search` command, so those are verified rather than
+guessed. Only `flatpak` is left out: installing anything needs a privileged
+container.
+
+**End-to-end tests** drive mpm itself rather than just its parsers, against
+managers that can be redirected by environment variable:
+
+```console
+$ nix-shell shell-test.nix --run 'MPM_INTEGRATION=1 cargo test'
+...
+read path verified against: pipx, gem, composer, npm
+full apply verified against: pipx, gem, composer, npm
+```
+
+Each installs a package directly, has mpm `inherit` it, checks the manifest mpm
+wrote, then declares and undeclares it and confirms `apply` really installs and
+removes. Managers that can only be redirected by flag get their parser checked
+instead -- pacman takes `--dbpath` as a flag that mpm never passes, so that test
+lays down a throwaway local database and asserts `pacman -Qe` leaves out a
+dependency while `pacman -Q` includes it.
+
+All three tiers skip themselves when their environment variable is unset, so the
+plain `cargo test` stays fast.
 
 ## Coming from metapam
 

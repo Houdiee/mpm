@@ -62,8 +62,24 @@ enum Command {
     /// Undeclare packages and uninstall them now
     Remove(PackageArgs),
 
+    /// Report declared packages that have a newer version available
+    Outdated,
+
+    /// Bring declared packages up to date, leaving pinned ones alone
+    Upgrade(ApplyArgs),
+
+    /// Search each manager's own index and show what it says
+    Search(SearchArgs),
+
     /// Show supported package managers and how this machine is configured
     Managers,
+}
+
+#[derive(Args)]
+struct SearchArgs {
+    /// What to look for
+    #[arg(required = true, value_name = "QUERY")]
+    query: String,
 }
 
 #[derive(Args)]
@@ -107,7 +123,11 @@ struct LayerArgs {
 
 impl LayerArgs {
     fn resolve(&self, host: &str) -> Layer {
-        if self.host { Layer::Host(host.to_string()) } else { Layer::Common }
+        if self.host {
+            Layer::Host(host.to_string())
+        } else {
+            Layer::Common
+        }
     }
 }
 
@@ -150,13 +170,20 @@ fn run() -> Result<ExitCode> {
         Command::Status => {
             // Non-zero on drift, so mpm is usable in CI and shell prompts.
             let drifted = commands::status::status(&ctx, &managers)?;
-            return Ok(if drifted { ExitCode::FAILURE } else { ExitCode::SUCCESS });
+            return Ok(if drifted {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            });
         }
 
         Command::Apply(args) => commands::apply::apply(
             &ctx,
             &managers,
-            &ApplyOpts { dry_run: args.dry_run, yes: args.yes },
+            &ApplyOpts {
+                dry_run: args.dry_run,
+                yes: args.yes,
+            },
         )?,
 
         Command::Inherit(layer) => {
@@ -186,6 +213,19 @@ fn run() -> Result<ExitCode> {
             let managers = require_managers(&managers, "remove")?;
             commands::edit::remove(&ctx, managers, &args.packages, &layer)?;
         }
+
+        Command::Outdated => commands::outdated::outdated(&ctx, &managers)?,
+
+        Command::Upgrade(args) => commands::upgrade::upgrade(
+            &ctx,
+            &managers,
+            &ApplyOpts {
+                dry_run: args.dry_run,
+                yes: args.yes,
+            },
+        )?,
+
+        Command::Search(args) => commands::search::search(&ctx, &managers, &args.query)?,
 
         Command::Managers => {
             if !managers.is_empty() {
@@ -223,10 +263,15 @@ mod tests {
     fn no_manager_name_collides_with_a_command_name() {
         // A leading token is read as a manager list unless it names a command,
         // so the two vocabularies must stay disjoint.
-        let commands: Vec<String> =
-            Cli::command().get_subcommands().map(|sub| sub.get_name().to_string()).collect();
+        let commands: Vec<String> = Cli::command()
+            .get_subcommands()
+            .map(|sub| sub.get_name().to_string())
+            .collect();
         for id in manager::ALL {
-            assert!(!commands.iter().any(|name| name == id), "`{id}` is both a manager and a command");
+            assert!(
+                !commands.iter().any(|name| name == id),
+                "`{id}` is both a manager and a command"
+            );
         }
     }
 
@@ -234,14 +279,18 @@ mod tests {
     fn managers_lead_and_are_comma_separated() {
         let cli = parse(&["mpm", "cargo,npm", "add", "ripgrep"]);
         assert_eq!(cli.managers(), vec!["cargo", "npm"]);
-        let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
+        let Some(Command::Add(args)) = cli.command else {
+            panic!("expected add")
+        };
         assert_eq!(args.packages.packages, vec!["ripgrep"]);
     }
 
     #[test]
     fn packages_are_space_separated() {
         let cli = parse(&["mpm", "cargo", "add", "ripgrep", "bat", "fd"]);
-        let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
+        let Some(Command::Add(args)) = cli.command else {
+            panic!("expected add")
+        };
         assert_eq!(args.packages.packages, vec!["ripgrep", "bat", "fd"]);
     }
 
@@ -280,24 +329,33 @@ mod tests {
     #[test]
     fn a_version_is_only_ever_recorded_deliberately() {
         let plain = parse(&["mpm", "cargo", "add", "ripgrep"]);
-        let Some(Command::Add(args)) = plain.command else { panic!("expected add") };
+        let Some(Command::Add(args)) = plain.command else {
+            panic!("expected add")
+        };
         assert!(!args.pin);
 
         let asked = parse(&["mpm", "cargo", "add", "--pin", "ripgrep"]);
-        let Some(Command::Add(args)) = asked.command else { panic!("expected add") };
+        let Some(Command::Add(args)) = asked.command else {
+            panic!("expected add")
+        };
         assert!(args.pin);
     }
 
     #[test]
     fn the_host_flag_chooses_the_layer() {
         assert_eq!(LayerArgs { host: false }.resolve("thinkpad"), Layer::Common);
-        assert_eq!(LayerArgs { host: true }.resolve("thinkpad"), Layer::Host("thinkpad".into()));
+        assert_eq!(
+            LayerArgs { host: true }.resolve("thinkpad"),
+            Layer::Host("thinkpad".into())
+        );
     }
 
     #[test]
     fn a_pin_is_one_quoted_argument() {
         let cli = parse(&["mpm", "cargo", "add", "ripgrep 14.1.0"]);
-        let Some(Command::Add(args)) = cli.command else { panic!("expected add") };
+        let Some(Command::Add(args)) = cli.command else {
+            panic!("expected add")
+        };
         assert_eq!(args.packages.packages, vec!["ripgrep 14.1.0"]);
     }
 }

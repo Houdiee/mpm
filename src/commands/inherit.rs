@@ -1,14 +1,21 @@
 use super::*;
 
-
 /// Put what is installed under management, merging with what the manifest says.
 pub fn inherit(ctx: &Ctx, requested: &[String], layer: &Layer) -> Result<()> {
     // Every manager present, not only managed ones: inheriting is how a manager
     // becomes managed.
     let ids: Vec<String> = if requested.is_empty() {
-        manager::ALL.iter().copied().filter(|id| present_by_id(id)).map(str::to_string).collect()
+        manager::ALL
+            .iter()
+            .copied()
+            .filter(|id| present_by_id(id))
+            .map(str::to_string)
+            .collect()
     } else {
-        dedup(requested).into_iter().map(|id| require_present(&id).map(|_| id)).collect::<Result<_>>()?
+        dedup(requested)
+            .into_iter()
+            .map(|id| require_present(&id).map(|_| id))
+            .collect::<Result<_>>()?
     };
 
     if ids.is_empty() {
@@ -56,4 +63,3 @@ pub fn inherit(ctx: &Ctx, requested: &[String], layer: &Layer) -> Result<()> {
     }
     Ok(())
 }
-

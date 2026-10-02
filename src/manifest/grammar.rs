@@ -10,11 +10,17 @@ pub struct PackageSpec {
 
 impl PackageSpec {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), version: None }
+        Self {
+            name: name.into(),
+            version: None,
+        }
     }
 
     pub fn pinned(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self { name: name.into(), version: Some(version.into()) }
+        Self {
+            name: name.into(),
+            version: Some(version.into()),
+        }
     }
 
     /// Whitespace is the only separator, because it is the one character no
@@ -28,15 +34,17 @@ impl PackageSpec {
         if name.starts_with("//") {
             bail!("`{}`: comments start with `#`", text.trim());
         }
-        // Such a name reaches the package manager as an option. Building commands
-        // as argv stops a name changing a command's shape, not its being read
-        // as a flag.
+        // Such a name reaches the manager as an option. Building commands as argv
+        // stops a name changing a command's shape, but not its being read as a flag.
         if name.starts_with('-') {
             bail!("`{}`: a package name cannot start with `-`", text.trim());
         }
         let version = fields.next();
         if let Some(extra) = fields.next() {
-            bail!("`{}`: expected `<name>` or `<name> <version>`, found `{extra}`", text.trim());
+            bail!(
+                "`{}`: expected `<name>` or `<name> <version>`, found `{extra}`",
+                text.trim()
+            );
         }
         Ok(match version {
             Some(version) => Self::pinned(name, version),
@@ -86,8 +94,14 @@ mod tests {
 
     #[test]
     fn a_second_field_is_the_version() {
-        assert_eq!(spec("ripgrep 14.1.0"), PackageSpec::pinned("ripgrep", "14.1.0"));
-        assert_eq!(spec("ripgrep\t14.1.0"), PackageSpec::pinned("ripgrep", "14.1.0"));
+        assert_eq!(
+            spec("ripgrep 14.1.0"),
+            PackageSpec::pinned("ripgrep", "14.1.0")
+        );
+        assert_eq!(
+            spec("ripgrep\t14.1.0"),
+            PackageSpec::pinned("ripgrep", "14.1.0")
+        );
     }
 
     #[test]
@@ -120,7 +134,10 @@ mod tests {
     #[test]
     fn a_trailing_comment_is_ignored_when_parsing() {
         assert_eq!(line("vim # my editor"), Some(PackageSpec::new("vim")));
-        assert_eq!(line("ripgrep 14.1.0 # locked"), Some(PackageSpec::pinned("ripgrep", "14.1.0")));
+        assert_eq!(
+            line("ripgrep 14.1.0 # locked"),
+            Some(PackageSpec::pinned("ripgrep", "14.1.0"))
+        );
     }
 
     #[test]
@@ -138,7 +155,10 @@ mod tests {
 
     #[test]
     fn split_comment_keeps_the_separating_whitespace() {
-        assert_eq!(split_comment("vim   # my editor"), ("vim   ", Some("# my editor")));
+        assert_eq!(
+            split_comment("vim   # my editor"),
+            ("vim   ", Some("# my editor"))
+        );
         assert_eq!(split_comment("vim"), ("vim", None));
     }
 }

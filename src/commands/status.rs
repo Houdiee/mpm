@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Returns true when the machine does not match its manifests.
 pub fn status(ctx: &Ctx, requested: &[String]) -> Result<bool> {
     let ids = selected(ctx, requested)?;
@@ -37,11 +36,13 @@ pub fn status(ctx: &Ctx, requested: &[String]) -> Result<bool> {
         } else {
             format!("; the rest: {}", report::summarize(&results))
         };
-        println!("{}", report::problem(&format!("{unreadable} manager(s) could not be read{rest}")));
+        println!(
+            "{}",
+            report::problem(&format!("{unreadable} manager(s) could not be read{rest}"))
+        );
     } else {
         println!("{}", report::summarize(&results));
     }
 
     Ok(results.iter().any(Reconciliation::has_work) || failed)
 }
-

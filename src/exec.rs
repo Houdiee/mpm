@@ -16,7 +16,11 @@ pub struct Invocation {
 
 impl Invocation {
     pub fn new(program: &str) -> Self {
-        Self { program: program.to_string(), args: Vec::new(), needs_root: false }
+        Self {
+            program: program.to_string(),
+            args: Vec::new(),
+            needs_root: false,
+        }
     }
 
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
@@ -33,7 +37,7 @@ impl Invocation {
         self
     }
 
-    pub fn as_root(mut self) -> Self {
+    pub fn with_root(mut self) -> Self {
         self.needs_root = true;
         self
     }
@@ -43,13 +47,13 @@ impl Invocation {
     /// When already running as root the elevator is still used if present;
     /// `sudo` is a no-op passthrough for root, so this needs no uid check.
     pub fn resolve(&self) -> (String, Vec<String>) {
-        if self.needs_root {
-            if let Some(elevator) = elevator() {
-                let mut args = Vec::with_capacity(self.args.len() + 1);
-                args.push(self.program.clone());
-                args.extend(self.args.iter().cloned());
-                return (elevator, args);
-            }
+        if self.needs_root
+            && let Some(elevator) = elevator()
+        {
+            let mut args = Vec::with_capacity(self.args.len() + 1);
+            args.push(self.program.clone());
+            args.extend(self.args.iter().cloned());
+            return (elevator, args);
         }
         (self.program.clone(), self.args.clone())
     }
@@ -77,7 +81,11 @@ impl Invocation {
     /// failure can be shown in full rather than summarised away.
     pub fn run_captured(&self) -> (String, Result<()>) {
         let (program, args) = self.resolve();
-        let output = match Command::new(&program).args(&args).stdin(Stdio::null()).output() {
+        let output = match Command::new(&program)
+            .args(&args)
+            .stdin(Stdio::null())
+            .output()
+        {
             Ok(output) => output,
             Err(error) => {
                 let reason = Err(error).with_context(|| format!("could not launch `{program}`"));
@@ -91,7 +99,11 @@ impl Invocation {
         let result = if output.status.success() {
             Ok(())
         } else {
-            Err(anyhow!("`{}` failed: {}", self.display(), last_line(&output.stderr)))
+            Err(anyhow!(
+                "`{}` failed: {}",
+                self.display(),
+                last_line(&output.stderr)
+            ))
         };
         (transcript, result)
     }
@@ -130,7 +142,7 @@ impl Invocation {
 /// reason a manager could not be read is thrown away.
 fn last_line(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
-    match text.lines().map(str::trim).filter(|line| !line.is_empty()).next_back() {
+    match text.lines().map(str::trim).rfind(|line| !line.is_empty()) {
         Some(line) => line.to_string(),
         None => "no output on stderr".to_string(),
     }
@@ -151,10 +163,14 @@ fn elevator() -> Option<String> {
 
 fn quote(text: &str) -> String {
     let safe = !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '=' | '@' | ':' | '+' | ','));
-    if safe { text.to_string() } else { format!("'{}'", text.replace('\'', r"'\''")) }
+        && text.chars().all(|c| {
+            c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '=' | '@' | ':' | '+' | ',')
+        });
+    if safe {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
 }
 
 #[cfg(test)]
@@ -164,13 +180,14 @@ mod tests {
     #[test]
     fn arguments_are_never_word_split() {
         let inv = Invocation::new("apt-get").arg("install").arg("weird name");
-        assert_eq!(inv.args, vec!["install".to_string(), "weird name".to_string()]);
+        assert_eq!(
+            inv.args,
+            vec!["install".to_string(), "weird name".to_string()]
+        );
     }
 
     #[test]
     fn a_failure_reports_what_the_command_complained_about() {
-        // Without this the reason a manager could not be read is discarded and
-        // the user is told only that "it failed".
         let inv = Invocation::new("sh").args(["-c", "echo boom >&2; exit 1"]);
         let error = inv.capture().expect_err("must fail");
         assert!(error.to_string().contains("boom"), "got: {error}");
@@ -204,7 +221,7 @@ mod tests {
     #[test]
     fn empty_mpm_sudo_disables_escalation() {
         temp_env("MPM_SUDO", "", || {
-            let inv = Invocation::new("pacman").arg("-S").as_root();
+            let inv = Invocation::new("pacman").arg("-S").with_root();
             assert_eq!(inv.resolve().0, "pacman");
         });
     }

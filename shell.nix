@@ -8,6 +8,5 @@ pkgs.mkShell {
     rustfmt
     clippy
     gcc
-    dpkg
   ];
 }
