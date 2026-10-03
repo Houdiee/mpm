@@ -16,10 +16,10 @@ impl Manager for Dnf {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         batched(
             Invocation::new("dnf").with_root().args(["remove", "-y"]),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -89,7 +89,7 @@ ripgrep 15.2.0-1.fc44
     #[test]
     fn writes_need_root_and_queries_do_not() {
         assert!(Dnf.install_commands(&[PackageSpec::new("ripgrep")])[0].needs_root);
-        assert!(Dnf.uninstall_commands(&["ripgrep".to_string()])[0].needs_root);
+        assert!(Dnf.uninstall_commands(&[PackageSpec::new("ripgrep")])[0].needs_root);
         assert!(!Dnf.list_command().needs_root);
     }
 

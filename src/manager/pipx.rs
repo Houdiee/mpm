@@ -19,11 +19,15 @@ impl Manager for Pipx {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         // `pipx uninstall a b` is rejected: one package per call.
-        names
+        installed
             .iter()
-            .map(|name| Invocation::new("pipx").arg("uninstall").arg(name.as_str()))
+            .map(|spec| {
+                Invocation::new("pipx")
+                    .arg("uninstall")
+                    .arg(spec.name.as_str())
+            })
             .collect()
     }
 
@@ -91,7 +95,8 @@ pyfiglet 1.0.4
 
     #[test]
     fn each_uninstall_gets_its_own_command() {
-        let commands = Pipx.uninstall_commands(&["cowsay".to_string(), "pyfiglet".to_string()]);
+        let commands =
+            Pipx.uninstall_commands(&[PackageSpec::new("cowsay"), PackageSpec::new("pyfiglet")]);
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[1].args, vec!["uninstall", "pyfiglet"]);
     }

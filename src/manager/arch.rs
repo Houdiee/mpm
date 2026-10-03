@@ -46,12 +46,12 @@ impl Manager for Arch {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         // -Rs removes now-orphaned dependencies but keeps configuration. -Rns
         // would delete config too, which a package-list sync must not decide.
         batched(
             Invocation::new("pacman").with_root().arg("-Rs"),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -169,7 +169,7 @@ ripgrep 14.1.0-1
 
     #[test]
     fn removal_keeps_configuration() {
-        let commands = Arch.uninstall_commands(&["vim".to_string()]);
+        let commands = Arch.uninstall_commands(&[PackageSpec::new("vim")]);
         assert_eq!(commands[0].args[0], "-Rs");
         assert!(commands[0].needs_root);
     }

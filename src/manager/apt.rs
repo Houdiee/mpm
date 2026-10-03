@@ -21,12 +21,12 @@ impl Manager for Apt {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         // `remove`, never `purge`: purge also deletes the package's configuration
         // files, which is not something a package-list sync should decide.
         batched(
             Invocation::new("apt-get").with_root().arg("remove"),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -122,13 +122,13 @@ libssl3t64/stable-security 3.5.7-1~deb13u3 amd64 [upgradable from: 3.5.7-1~deb13
 
     #[test]
     fn removal_never_purges() {
-        let names = vec!["vim".to_string()];
+        let names = vec![PackageSpec::new("vim")];
         assert_eq!(Apt.uninstall_commands(&names)[0].args[0], "remove");
     }
 
     #[test]
     fn removal_is_not_auto_confirmed() {
-        let names = vec!["vim".to_string()];
+        let names = vec![PackageSpec::new("vim")];
         let cmd = &Apt.uninstall_commands(&names)[0];
         assert!(!cmd.args.iter().any(|a| a == "-y"));
     }
@@ -136,7 +136,7 @@ libssl3t64/stable-security 3.5.7-1~deb13u3 amd64 [upgradable from: 3.5.7-1~deb13
     #[test]
     fn install_and_remove_need_root() {
         assert!(Apt.install_commands(&[PackageSpec::new("vim")])[0].needs_root);
-        assert!(Apt.uninstall_commands(&["vim".to_string()])[0].needs_root);
+        assert!(Apt.uninstall_commands(&[PackageSpec::new("vim")])[0].needs_root);
     }
 
     #[test]

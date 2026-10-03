@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::manager::Manager;
+use crate::manifest::Resolved;
 use crate::manifest::grammar::PackageSpec;
 
 /// A declared pin that does not match the installed version.
@@ -76,7 +77,7 @@ pub struct Reconciliation {
     /// Installed at the wrong version.
     pub repin: Vec<Repin>,
     /// Installed but not declared.
-    pub remove: Vec<String>,
+    pub remove: Vec<PackageSpec>,
 }
 
 impl Reconciliation {
@@ -96,10 +97,14 @@ impl Reconciliation {
 ///
 /// An error rather than a warning: installing an arbitrary version when an exact
 /// one was asked for is the quiet substitution this tool exists to avoid.
-pub fn validate(manager: &dyn Manager, declared: &BTreeMap<String, PackageSpec>) -> Result<()> {
+pub fn validate(manager: &dyn Manager, resolved: &Resolved) -> Result<()> {
     let mut problems = Vec::new();
 
-    for (name, spec) in declared {
+    for (name, specs) in &resolved.repeated {
+        problems.extend(repeated_problem(manager, name, specs));
+    }
+
+    for (name, spec) in &resolved.declared {
         let Some(version) = &spec.version else {
             continue;
         };
@@ -121,6 +126,34 @@ pub fn validate(manager: &dyn Manager, declared: &BTreeMap<String, PackageSpec>)
     }
 
     Ok(())
+}
+
+/// Why one manifest file may not declare this name more than once, if it may not.
+///
+/// Two lines carrying the same version are always a mistake -- the second says
+/// nothing the first did not. Two different versions are a real declaration only
+/// where the manager keeps both *and* an exact version can be asked for;
+/// anywhere else the second line would simply replace the first.
+fn repeated_problem(manager: &dyn Manager, name: &str, specs: &[PackageSpec]) -> Option<String> {
+    let mut versions: Vec<Option<&str>> = specs.iter().map(|s| s.version.as_deref()).collect();
+    versions.sort_unstable();
+    versions.dedup();
+
+    if versions.len() < specs.len() {
+        return Some(format!(
+            "`{name}` is declared more than once with the same version -- remove the duplicate"
+        ));
+    }
+
+    if manager.allows_multiple_versions() && manager.supports_pinning() {
+        return None;
+    }
+
+    Some(format!(
+        "`{name}` is declared at {} different versions, but {} keeps only one version of a package",
+        specs.len(),
+        manager.id()
+    ))
 }
 
 /// Compare declared state against installed state.
@@ -175,11 +208,13 @@ pub fn compute(
         );
     }
 
-    for name in installed.keys() {
+    for (name, present) in installed {
         if declared.contains_key(name) {
             continue;
         }
-        changes.remove.push(name.clone());
+        // The whole spec, not just the name: a manager may need the version to
+        // remove it, and the plan is clearer for showing which one goes.
+        changes.remove.push(present.clone());
     }
 
     Ok(changes)
@@ -188,6 +223,15 @@ pub fn compute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Removal now carries whole specs; the tests care about the names.
+    fn removed(changes: &Reconciliation) -> Vec<String> {
+        changes
+            .remove
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect()
+    }
 
     fn map(specs: &[PackageSpec]) -> BTreeMap<String, PackageSpec> {
         specs
@@ -225,7 +269,7 @@ mod tests {
     #[test]
     fn installed_but_undeclared_is_removed() {
         let changes = changes_of(&[], &[PackageSpec::new("nano")], false);
-        assert_eq!(changes.remove, vec!["nano"]);
+        assert_eq!(removed(&changes), vec!["nano"]);
         assert!(changes.install.is_empty());
     }
 
@@ -369,11 +413,65 @@ mod validation_tests {
     use super::*;
     use crate::manager;
 
-    fn declared(specs: &[PackageSpec]) -> BTreeMap<String, PackageSpec> {
-        specs
-            .iter()
-            .map(|spec| (spec.name.clone(), spec.clone()))
-            .collect()
+    fn declared(specs: &[PackageSpec]) -> Resolved {
+        Resolved {
+            declared: specs
+                .iter()
+                .map(|spec| (spec.name.clone(), spec.clone()))
+                .collect(),
+            repeated: BTreeMap::new(),
+        }
+    }
+
+    /// One manifest file declaring `name` more than once.
+    fn declared_twice(specs: &[PackageSpec]) -> Resolved {
+        let name = specs[0].name.clone();
+        Resolved {
+            declared: [(name.clone(), specs[specs.len() - 1].clone())]
+                .into_iter()
+                .collect(),
+            repeated: [(name, specs.to_vec())].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn the_same_package_twice_at_the_same_version_is_always_an_error() {
+        // Even where several versions may coexist, two identical lines say
+        // nothing the first did not.
+        let gem = manager::get("gem").expect("gem");
+        let error = validate(
+            gem.as_ref(),
+            &declared_twice(&[PackageSpec::new("tilt"), PackageSpec::new("tilt")]),
+        )
+        .expect_err("a plain duplicate is a mistake");
+        assert!(error.to_string().contains("same version"), "{error}");
+    }
+
+    #[test]
+    fn two_versions_of_one_package_are_rejected_where_only_one_can_be_installed() {
+        let cargo = manager::get("cargo").expect("cargo");
+        let error = validate(
+            cargo.as_ref(),
+            &declared_twice(&[
+                PackageSpec::pinned("ripgrep", "14.0.0"),
+                PackageSpec::pinned("ripgrep", "14.1.0"),
+            ]),
+        )
+        .expect_err("cargo keeps one version of a crate");
+        assert!(error.to_string().contains("different versions"), "{error}");
+        assert!(error.to_string().contains("cargo"), "{error}");
+    }
+
+    #[test]
+    fn a_repeat_across_layers_is_an_override_not_a_duplicate() {
+        // `Layout::resolve` records a repeat only within a single file, so a host
+        // layer raising a version carries no `repeated` entry and validates.
+        let cargo = manager::get("cargo").expect("cargo");
+        validate(
+            cargo.as_ref(),
+            &declared(&[PackageSpec::pinned("ripgrep", "14.1.0")]),
+        )
+        .expect("one surviving declaration is fine");
     }
 
     #[test]

@@ -37,6 +37,12 @@ pub struct Layout {
 #[derive(Debug, Clone, Default)]
 pub struct Resolved {
     pub declared: BTreeMap<String, PackageSpec>,
+    /// Names one manifest file declared more than once, with every spec given.
+    ///
+    /// A repeat *across* layers is an override and says nothing; a repeat
+    /// *within* one file is either a second version of the same package or a
+    /// mistake, and only the manager knows which.
+    pub repeated: BTreeMap<String, Vec<PackageSpec>>,
 }
 
 impl Layout {
@@ -116,10 +122,20 @@ impl Layout {
             if !manifest.exists() {
                 continue;
             }
+            let mut in_this_file: BTreeMap<String, Vec<PackageSpec>> = BTreeMap::new();
             for spec in manifest.specs() {
+                in_this_file
+                    .entry(spec.name.clone())
+                    .or_default()
+                    .push(spec.clone());
                 // A later layer can change a version but never take a package
                 // away: declared is the plain union of every layer.
                 resolved.declared.insert(spec.name.clone(), spec.clone());
+            }
+            for (name, specs) in in_this_file {
+                if specs.len() > 1 {
+                    resolved.repeated.insert(name, specs);
+                }
             }
         }
 
@@ -214,6 +230,44 @@ mod tests {
 
         let resolved = layout.resolve("pacman", "thinkpad").expect("resolve");
         assert_eq!(names(&resolved), vec!["ripgrep", "vim"]);
+    }
+
+    #[test]
+    fn a_name_repeated_in_one_file_is_recorded() {
+        let dir = TempDir::new("repeat");
+        let layout = Layout::at(&dir.0);
+        seed(
+            &layout.common("cargo"),
+            "ripgrep 14.0.0\nripgrep 14.1.0\nbat\n",
+        );
+
+        let resolved = layout.resolve("cargo", "thinkpad").expect("resolve");
+        let repeated: Vec<&String> = resolved.repeated.keys().collect();
+        assert_eq!(repeated, vec!["ripgrep"]);
+        assert_eq!(resolved.repeated["ripgrep"].len(), 2);
+        // The map still holds the last one, so nothing downstream changes shape.
+        assert_eq!(
+            resolved.declared["ripgrep"].version.as_deref(),
+            Some("14.1.0")
+        );
+    }
+
+    #[test]
+    fn a_name_repeated_across_layers_is_an_override() {
+        let dir = TempDir::new("override");
+        let layout = Layout::at(&dir.0);
+        seed(&layout.common("cargo"), "ripgrep 14.0.0\n");
+        seed(&layout.host("thinkpad", "cargo"), "ripgrep 14.1.0\n");
+
+        let resolved = layout.resolve("cargo", "thinkpad").expect("resolve");
+        assert!(
+            resolved.repeated.is_empty(),
+            "a host layer raising a version is not a duplicate declaration"
+        );
+        assert_eq!(
+            resolved.declared["ripgrep"].version.as_deref(),
+            Some("14.1.0")
+        );
     }
 
     #[test]

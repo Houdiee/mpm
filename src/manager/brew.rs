@@ -16,10 +16,10 @@ impl Manager for Brew {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         batched(
             Invocation::new("brew").arg("uninstall"),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 

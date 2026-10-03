@@ -93,8 +93,8 @@ fn report_what_did_not_take(ctx: &Ctx, ids: &[String]) -> Result<()> {
                 change.spec.version.as_deref().unwrap_or("?")
             );
         }
-        for name in &changes.remove {
-            println!("    {name} is still installed");
+        for spec in &changes.remove {
+            println!("    {} is still installed", spec.name);
         }
     }
     // Most pinning managers give each package its own dependencies, so a version

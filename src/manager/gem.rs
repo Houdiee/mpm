@@ -16,11 +16,11 @@ impl Manager for Gem {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         // Without these, uninstall stops to ask which version to remove.
         batched(
             Invocation::new("gem").args(["uninstall", "--executables", "--all"]),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -71,6 +71,12 @@ impl Manager for Gem {
     /// drift forever.
     fn supports_pinning(&self) -> bool {
         false
+    }
+
+    /// Verified: `gem install tilt -v 2.0.11` then `-v 2.3.0` leaves both, and
+    /// `gem list` reports `tilt (2.3.0, 2.0.11)`.
+    fn allows_multiple_versions(&self) -> bool {
+        true
     }
 }
 
@@ -210,7 +216,7 @@ json (2.9.1)
 
     #[test]
     fn removal_does_not_stop_to_ask() {
-        let commands = Gem.uninstall_commands(&["tilt".to_string()]);
+        let commands = Gem.uninstall_commands(&[PackageSpec::new("tilt")]);
         assert_eq!(
             commands[0].args,
             vec!["uninstall", "--executables", "--all", "tilt"]

@@ -2,7 +2,11 @@ use crate::exec::Invocation;
 use crate::manager::{Manager, batched, pinned_with};
 use crate::manifest::grammar::PackageSpec;
 
+/// The registry clients, which differ only in their subcommands and their
+/// listing format. They share a manifest grammar, a pin separator and, for npm
+/// and bun, a parser -- so they share one file rather than repeating it.
 pub enum NodeTool {
+    Bun,
     Npm,
     Pnpm,
 }
@@ -14,6 +18,7 @@ pub struct Node {
 impl Manager for Node {
     fn id(&self) -> &'static str {
         match self.tool {
+            NodeTool::Bun => "bun",
             NodeTool::Npm => "npm",
             NodeTool::Pnpm => "pnpm",
         }
@@ -27,18 +32,20 @@ impl Manager for Node {
         // registry client accepts on its command line.
         let specs = packages.iter().map(|spec| pinned_with(spec, "@"));
         vec![match self.tool {
+            NodeTool::Bun => Invocation::new("bun").args(["add", "-g"]).args(specs),
             NodeTool::Npm => Invocation::new("npm").args(["install", "-g"]).args(specs),
             // `pnpm install -g` does not add a global package; `pnpm add -g` does.
             NodeTool::Pnpm => Invocation::new("pnpm").args(["add", "-g"]).args(specs),
         }]
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
-        if names.is_empty() {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
+        if installed.is_empty() {
             return Vec::new();
         }
-        let names = names.iter().cloned();
+        let names = installed.iter().map(|spec| spec.name.clone());
         vec![match self.tool {
+            NodeTool::Bun => Invocation::new("bun").args(["remove", "-g"]).args(names),
             NodeTool::Npm => Invocation::new("npm").args(["uninstall", "-g"]).args(names),
             NodeTool::Pnpm => Invocation::new("pnpm").args(["remove", "-g"]).args(names),
         }]
@@ -50,15 +57,16 @@ impl Manager for Node {
                 Invocation::new("npm").args(["update", "-g"]),
                 unpinned.iter().cloned(),
             ),
-            NodeTool::Pnpm => Vec::new(),
+            // Neither `pnpm update -g` nor `bun update -g` has been checked
+            // against a real tool, and an unverified upgrade is worse than none.
+            NodeTool::Bun | NodeTool::Pnpm => Vec::new(),
         }
     }
 
     fn outdated_command(&self) -> Option<Invocation> {
         match self.tool {
             NodeTool::Npm => Some(Invocation::new("npm").args(["outdated", "-g"])),
-            // `pnpm outdated -g` output has never been checked against a real pnpm.
-            NodeTool::Pnpm => None,
+            NodeTool::Bun | NodeTool::Pnpm => None,
         }
     }
 
@@ -80,13 +88,14 @@ impl Manager for Node {
     fn search_command(&self, query: &str) -> Option<Invocation> {
         match self.tool {
             NodeTool::Npm => Some(Invocation::new("npm").arg("search").arg(query)),
-            // pnpm has no search of its own.
-            NodeTool::Pnpm => None,
+            // Neither has a search of its own.
+            NodeTool::Bun | NodeTool::Pnpm => None,
         }
     }
 
     fn list_command(&self) -> Invocation {
         match self.tool {
+            NodeTool::Bun => Invocation::new("bun").args(["pm", "ls", "-g"]),
             NodeTool::Npm => Invocation::new("npm").args(["list", "-g", "--depth=0"]),
             NodeTool::Pnpm => Invocation::new("pnpm").args(["list", "-g", "--depth=0"]),
         }
@@ -94,7 +103,8 @@ impl Manager for Node {
 
     fn parse_list(&self, stdout: &str) -> Vec<PackageSpec> {
         match self.tool {
-            NodeTool::Npm => parse_registry_tree(stdout),
+            // bun prints npm.s box-drawing tree of `name@version`.
+            NodeTool::Bun | NodeTool::Npm => parse_registry_tree(stdout),
             NodeTool::Pnpm => parse_pnpm(stdout),
         }
     }
@@ -318,7 +328,7 @@ Legend: production dependency, optional only, dev only
             tool: NodeTool::Npm,
         };
         assert_eq!(
-            npm.uninstall_commands(&["typescript".to_string()])[0].args,
+            npm.uninstall_commands(&[PackageSpec::new("typescript")])[0].args,
             vec!["uninstall", "-g", "typescript"]
         );
     }

@@ -79,8 +79,8 @@ pub fn render(changes: &Reconciliation) -> String {
             note(change)
         ));
     }
-    for name in &changes.remove {
-        out.push_str(&format!("  {} {}\n", red("-"), name));
+    for spec in &changes.remove {
+        out.push_str(&format!("  {} {}\n", red("-"), spec));
     }
 
     out
@@ -161,7 +161,7 @@ mod tests {
                 spec: PackageSpec::pinned("bat", "0.24.0"),
                 installed: "0.23.0".into(),
             }],
-            remove: vec!["nano".into()],
+            remove: vec![PackageSpec::new("nano")],
         }
     }
 

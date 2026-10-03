@@ -133,9 +133,10 @@ fn remove_one(ctx: &Ctx, id: &str, packages: &[String], layer: &Layer) -> Result
         .map(|spec| spec.name.clone())
         .collect();
 
-    // Uninstall everything named, whether or not this layer declared it.
-    let requested: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
-    for command in found.uninstall_commands(&requested) {
+    // Uninstall everything named, whether or not this layer declared it. The
+    // specs go through as typed, so a version the user gave is not thrown away --
+    // some managers need it to remove anything at all.
+    for command in found.uninstall_commands(&specs) {
         run_visibly(&command)?;
     }
 

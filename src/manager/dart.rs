@@ -31,13 +31,13 @@ impl Manager for Pub {
             .collect()
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
-        names
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
+        installed
             .iter()
-            .map(|name| {
+            .map(|spec| {
                 Invocation::new("dart")
                     .args(["pub", "global", "deactivate"])
-                    .arg(name.as_str())
+                    .arg(spec.name.as_str())
             })
             .collect()
     }

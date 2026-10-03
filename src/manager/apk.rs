@@ -16,10 +16,10 @@ impl Manager for Apk {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         batched(
             Invocation::new("apk").with_root().arg("del"),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -98,7 +98,7 @@ ripgrep
     #[test]
     fn writes_need_root() {
         assert!(Apk.install_commands(&[PackageSpec::new("ripgrep")])[0].needs_root);
-        assert!(Apk.uninstall_commands(&["ripgrep".to_string()])[0].needs_root);
+        assert!(Apk.uninstall_commands(&[PackageSpec::new("ripgrep")])[0].needs_root);
         assert!(!Apk.list_command().needs_root);
     }
 }

@@ -16,10 +16,10 @@ impl Manager for Raco {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         batched(
             Invocation::new("raco").args(["pkg", "remove", "--batch"]),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 

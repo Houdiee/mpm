@@ -27,6 +27,11 @@ pkgs.mkShell {
     php84Packages.composer
     luarocks
     cargo # its own `cargo install --list`
+    uv
+    opam
+    dart
+    racket-minimal # raco
+    coursier
 
     # Present so `mpm managers` can see them, though their package databases
     # cannot be created here: apt wants /var/lib/apt, flatpak a system

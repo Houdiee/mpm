@@ -16,10 +16,10 @@ impl Manager for Luarocks {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         batched(
             Invocation::new("luarocks").arg("remove"),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -69,8 +69,8 @@ mod tests {
 
     #[test]
     fn removals_share_one_command() {
-        let commands =
-            Luarocks.uninstall_commands(&["inspect".to_string(), "penlight".to_string()]);
+        let commands = Luarocks
+            .uninstall_commands(&[PackageSpec::new("inspect"), PackageSpec::new("penlight")]);
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].args, vec!["remove", "inspect", "penlight"]);
     }

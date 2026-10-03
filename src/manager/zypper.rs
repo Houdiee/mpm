@@ -18,14 +18,14 @@ impl Manager for Zypper {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         // `remove`, not `remove --clean-deps`: pulling orphaned dependencies out is
         // not something a package-list sync should decide on its own.
         batched(
             Invocation::new("zypper")
                 .with_root()
                 .args(["--non-interactive", "remove"]),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -92,8 +92,7 @@ mod tests {
 
     // Captured from `zypper --quiet search --installed-only --details --type
     // package` in opensuse/tumbleweed.
-    const LIST: &str = "\
-
+    const LIST: &str = "\n\
 S  | Name                | Type    | Version                        | Arch   | Repository
 ---+---------------------+---------+--------------------------------+--------+-------------------------
 i+ | aaa_base            | package | 84.87+git20260924.144354a1-1.1 | x86_64 | openSUSE-Tumbleweed-Oss
@@ -143,7 +142,7 @@ i  | boost-license1_92_0 | package | 1.92.0-1.1                     | noarch | o
     #[test]
     fn changes_need_root() {
         assert!(Zypper.install_commands(&[PackageSpec::new("ripgrep")])[0].needs_root);
-        assert!(Zypper.uninstall_commands(&["ripgrep".to_string()])[0].needs_root);
+        assert!(Zypper.uninstall_commands(&[PackageSpec::new("ripgrep")])[0].needs_root);
     }
 
     #[test]

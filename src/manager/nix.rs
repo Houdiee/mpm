@@ -25,10 +25,10 @@ impl Manager for Nix {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         batched(
             Invocation::new("nix-env").arg("--uninstall"),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -105,6 +105,6 @@ openssh-10.3p1
     fn nothing_is_run_as_root() {
         // nix-env writes a per-user profile; elevating would write root's instead.
         assert!(!Nix.install_commands(&[PackageSpec::new("hello")])[0].needs_root);
-        assert!(!Nix.uninstall_commands(&["hello".to_string()])[0].needs_root);
+        assert!(!Nix.uninstall_commands(&[PackageSpec::new("hello")])[0].needs_root);
     }
 }

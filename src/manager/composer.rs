@@ -16,10 +16,10 @@ impl Manager for Composer {
         )
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
         batched(
             Invocation::new("composer").args(["global", "remove", "--no-interaction"]),
-            names.iter().cloned(),
+            installed.iter().map(|spec| spec.name.clone()),
         )
     }
 
@@ -128,8 +128,10 @@ psr/simple-cache 3.0.0 Common interfaces for simple caching
 
     #[test]
     fn removals_share_one_command() {
-        let commands =
-            Composer.uninstall_commands(&["psr/log".to_string(), "psr/container".to_string()]);
+        let commands = Composer.uninstall_commands(&[
+            PackageSpec::new("psr/log"),
+            PackageSpec::new("psr/container"),
+        ]);
         assert_eq!(commands.len(), 1);
     }
 

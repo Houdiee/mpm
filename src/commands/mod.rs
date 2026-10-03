@@ -131,7 +131,7 @@ fn reconcile_manager(layout: &Layout, host: &str, manager: &dyn Manager) -> Resu
     let resolved = layout.resolve(id, host)?;
 
     // A version this manager cannot honour is an error, not a warning.
-    reconcile::validate(manager, &resolved.declared)?;
+    reconcile::validate(manager, &resolved)?;
 
     let installed = installed_map(manager)
         .with_context(|| format!("could not list installed packages for `{id}`"))?;
@@ -218,8 +218,8 @@ pub(crate) mod fixture {
         fn install_commands(&self, packages: &[PackageSpec]) -> Vec<Invocation> {
             vec![Invocation::new("true").args(packages.iter().map(|spec| spec.name.clone()))]
         }
-        fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
-            vec![Invocation::new("true").args(names.iter().cloned())]
+        fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
+            vec![Invocation::new("true").args(installed.iter().map(|s| s.name.clone()))]
         }
         fn list_command(&self) -> Invocation {
             Invocation::new("printf").arg("%s").arg(self.installed)
@@ -267,6 +267,14 @@ mod tests {
     use super::fixture::*;
     use super::*;
 
+    fn removed(changes: &Reconciliation) -> Vec<String> {
+        changes
+            .remove
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect()
+    }
+
     #[test]
     fn naming_a_manager_twice_is_one_pass() {
         let names = vec!["cargo".to_string(), "npm".to_string(), "cargo".to_string()];
@@ -286,7 +294,7 @@ mod tests {
         let changes = run(&layout, &fake).expect("reconciles");
 
         assert_eq!(changes.install, vec![PackageSpec::new("ripgrep")]);
-        assert_eq!(changes.remove, vec!["nano"]);
+        assert_eq!(removed(&changes), vec!["nano"]);
     }
 
     #[test]
@@ -301,7 +309,7 @@ mod tests {
         };
         let changes = run(&layout, &fake).expect("reconciles");
 
-        assert_eq!(changes.remove, vec!["bat"]);
+        assert_eq!(removed(&changes), vec!["bat"]);
     }
 
     #[test]

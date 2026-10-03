@@ -3,8 +3,8 @@ use crate::manifest::grammar::PackageSpec;
 pub mod apk;
 pub mod apt;
 pub mod arch;
+pub mod asdf;
 pub mod brew;
-pub mod bun;
 pub mod cargo;
 pub mod composer;
 pub mod coursier;
@@ -13,20 +13,61 @@ pub mod dnf;
 pub mod dotnet;
 pub mod flatpak;
 pub mod gem;
+pub mod go;
+pub mod krew;
 pub mod luarocks;
+pub mod mise;
 pub mod nix;
 pub mod node;
 pub mod opam;
+pub mod pip;
 pub mod pipx;
+pub mod pixi;
+pub mod pyenv;
 pub mod raco;
+pub mod rustup;
 pub mod uv;
+pub mod volta;
+pub mod vscode;
 pub mod xbps;
 pub mod zypper;
 
 /// Every package manager mpm can drive, in the order they are reported.
 pub const ALL: &[&str] = &[
-    "apk", "apt", "brew", "bun", "cargo", "composer", "coursier", "dnf", "dotnet", "flatpak",
-    "gem", "luarocks", "nix", "npm", "opam", "pacman", "pipx", "pnpm", "pub", "raco", "uv", "xbps",
+    "apk",
+    "apt",
+    "asdf",
+    "brew",
+    "bun",
+    "cargo",
+    "code",
+    "code-server",
+    "codium",
+    "composer",
+    "coursier",
+    "dnf",
+    "dotnet",
+    "flatpak",
+    "gem",
+    "go",
+    "krew",
+    "luarocks",
+    "mise",
+    "nix",
+    "npm",
+    "opam",
+    "pacman",
+    "pip",
+    "pipx",
+    "pixi",
+    "pnpm",
+    "pub",
+    "pyenv",
+    "raco",
+    "rustup",
+    "uv",
+    "volta",
+    "xbps",
     "zypper",
 ];
 /// One package manager, described as argument vectors rather than shell strings.
@@ -43,7 +84,12 @@ pub trait Manager {
         self.id()
     }
     fn install_commands(&self, packages: &[PackageSpec]) -> Vec<Invocation>;
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation>;
+    /// Removal receives the *installed* specs, versions included.
+    ///
+    /// Some managers cannot remove a package by name alone, and mpm already
+    /// knows the installed version from [`Manager::parse_list`]. Managers that
+    /// need only the name take `.name`.
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation>;
     fn list_command(&self) -> Invocation;
     /// Bring packages up to date leaving `pinned` untouched; empty means mpm has
     /// no upgrade it can drive safely here.
@@ -83,34 +129,62 @@ pub trait Manager {
     fn name_selects_version(&self, _name: &str) -> bool {
         false
     }
+
+    /// Whether several versions of one package can be installed at once.
+    ///
+    /// Where this is false, declaring a package twice is an error: the second
+    /// line could only ever undo the first.
+    fn allows_multiple_versions(&self) -> bool {
+        false
+    }
 }
 pub fn get(id: &str) -> Option<Box<dyn Manager>> {
     match id {
         "apk" => Some(Box::new(apk::Apk)),
         "apt" => Some(Box::new(apt::Apt)),
+        "asdf" => Some(Box::new(asdf::Asdf)),
         "brew" => Some(Box::new(brew::Brew)),
-        "bun" => Some(Box::new(bun::Bun)),
+        "bun" => Some(Box::new(node::Node {
+            tool: node::NodeTool::Bun,
+        })),
         "cargo" => Some(Box::new(cargo::Cargo)),
+        "code" => Some(Box::new(vscode::VsCode {
+            editor: vscode::Editor::Code,
+        })),
+        "code-server" => Some(Box::new(vscode::VsCode {
+            editor: vscode::Editor::CodeServer,
+        })),
+        "codium" => Some(Box::new(vscode::VsCode {
+            editor: vscode::Editor::Codium,
+        })),
         "composer" => Some(Box::new(composer::Composer)),
         "coursier" => Some(Box::new(coursier::Coursier)),
         "dnf" => Some(Box::new(dnf::Dnf)),
         "dotnet" => Some(Box::new(dotnet::Dotnet)),
         "flatpak" => Some(Box::new(flatpak::Flatpak)),
         "gem" => Some(Box::new(gem::Gem)),
+        "go" => Some(Box::new(go::Go)),
+        "krew" => Some(Box::new(krew::Krew)),
         "luarocks" => Some(Box::new(luarocks::Luarocks)),
+        "mise" => Some(Box::new(mise::Mise)),
         "nix" => Some(Box::new(nix::Nix)),
         "npm" => Some(Box::new(node::Node {
             tool: node::NodeTool::Npm,
         })),
         "opam" => Some(Box::new(opam::Opam)),
         "pacman" => Some(Box::new(arch::Arch)),
+        "pip" => Some(Box::new(pip::Pip)),
         "pipx" => Some(Box::new(pipx::Pipx)),
+        "pixi" => Some(Box::new(pixi::Pixi)),
         "pnpm" => Some(Box::new(node::Node {
             tool: node::NodeTool::Pnpm,
         })),
         "pub" => Some(Box::new(dart::Pub)),
+        "pyenv" => Some(Box::new(pyenv::Pyenv)),
         "raco" => Some(Box::new(raco::Raco)),
+        "rustup" => Some(Box::new(rustup::Rustup)),
         "uv" => Some(Box::new(uv::Uv)),
+        "volta" => Some(Box::new(volta::Volta)),
         "xbps" => Some(Box::new(xbps::Xbps)),
         "zypper" => Some(Box::new(zypper::Zypper)),
         _ => None,
@@ -181,6 +255,33 @@ mod tests {
                 get(id).unwrap_or_else(|| panic!("`{id}` is advertised but not registered"));
             assert_eq!(&manager.id(), id);
         }
+    }
+
+    #[test]
+    fn no_manager_claims_both_pinning_and_coexisting_versions() {
+        // The reconciler keys declared and installed state by name, so it holds
+        // one version per package. A manager that both pins *and* keeps versions
+        // side by side needs that changed first: this is the tripwire for
+        // enabling the pair without doing the work.
+        for id in ALL {
+            let manager = get(id).expect("registered");
+            assert!(
+                !(manager.supports_pinning() && manager.allows_multiple_versions()),
+                "`{id}` claims both; reconcile keys state by name and cannot hold two"
+            );
+        }
+    }
+
+    #[test]
+    fn the_roster_is_sorted_unique_and_counted() {
+        // A manager registered in `get` but left out of `ALL` is invisible:
+        // `mpm managers` never names it and no manifest selects it. Nothing else
+        // catches that, so the count is deliberate.
+        let mut sorted = ALL.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, ALL, "`ALL` must be sorted and free of duplicates");
+        assert_eq!(ALL.len(), 35, "update this count when adding a manager");
     }
     #[test]
     fn the_advertised_list_is_alphabetical() {

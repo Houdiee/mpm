@@ -29,13 +29,13 @@ impl Manager for Dotnet {
             .collect()
     }
 
-    fn uninstall_commands(&self, names: &[String]) -> Vec<Invocation> {
-        names
+    fn uninstall_commands(&self, installed: &[PackageSpec]) -> Vec<Invocation> {
+        installed
             .iter()
-            .map(|name| {
+            .map(|spec| {
                 Invocation::new("dotnet")
                     .args(["tool", "uninstall", "-g"])
-                    .arg(name.as_str())
+                    .arg(spec.name.as_str())
             })
             .collect()
     }
@@ -110,7 +110,8 @@ csharpier           0.29.0       dotnet-csharpier
 
     #[test]
     fn each_tool_gets_its_own_command() {
-        let cmds = Dotnet.uninstall_commands(&["dotnet-ef".to_string(), "csharpier".to_string()]);
+        let cmds = Dotnet
+            .uninstall_commands(&[PackageSpec::new("dotnet-ef"), PackageSpec::new("csharpier")]);
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].args, vec!["tool", "uninstall", "-g", "dotnet-ef"]);
         assert_eq!(cmds[1].args, vec!["tool", "uninstall", "-g", "csharpier"]);
